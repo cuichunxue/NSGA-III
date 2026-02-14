@@ -1,0 +1,291 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NSGA-III 多目的最適化ツール</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+    <script src="https://cdn.plot.ly/plotly-2.27.0.min.js" charset="utf-8"></script>
+</head>
+<body>
+
+<!-- ===== ヘッダー ===== -->
+<header class="hero">
+    <div class="container">
+        <h1>NSGA-III 多目的最適化</h1>
+        <p class="subtitle">パレート最適解をブラウザ上で簡単に探索できるツール</p>
+    </div>
+</header>
+
+<!-- ===== ステッパー ===== -->
+<nav class="stepper container" id="stepper">
+    <div class="step active" data-step="1">
+        <span class="step-num">1</span>
+        <span class="step-label">問題選択</span>
+    </div>
+    <div class="step-line"></div>
+    <div class="step" data-step="2">
+        <span class="step-num">2</span>
+        <span class="step-label">設定</span>
+    </div>
+    <div class="step-line"></div>
+    <div class="step" data-step="3">
+        <span class="step-num">3</span>
+        <span class="step-label">実行</span>
+    </div>
+    <div class="step-line"></div>
+    <div class="step" data-step="4">
+        <span class="step-num">4</span>
+        <span class="step-label">結果</span>
+    </div>
+</nav>
+
+<main class="container">
+
+    <!-- ============================================================ -->
+    <!-- STEP 1: 問題選択                                              -->
+    <!-- ============================================================ -->
+    <section class="panel" id="step1-panel">
+        <h2>Step 1: 最適化問題を選択してください</h2>
+        <p class="hint">まずはデモ問題で試すのがおすすめです。自分のモデルを使う場合は「カスタム」を選択してください。</p>
+
+        <div class="mode-toggle">
+            <button class="btn-mode active" data-mode="demo" id="btn-mode-demo">デモ問題</button>
+            <button class="btn-mode" data-mode="custom" id="btn-mode-custom">カスタム（OLSモデル）</button>
+        </div>
+
+        <!-- デモ問題カード -->
+        <div id="demo-section">
+            <div class="card-grid" id="demo-cards">
+                <!-- JS で生成 -->
+            </div>
+        </div>
+
+        <!-- カスタムモード -->
+        <div id="custom-section" class="hidden">
+            <div class="card info-card">
+                <h3>カスタム設定</h3>
+                <p>joblib 保存済みの OLS モデルファイルをアップロードし、設計変数と目標値を設定します。</p>
+
+                <!-- モデルアップロード -->
+                <div class="form-group">
+                    <label>モデルファイル (.joblib)</label>
+                    <div class="upload-area" id="upload-area">
+                        <div id="upload-prompt">
+                            <span class="upload-icon">+</span>
+                            <span>クリックまたはドラッグ&amp;ドロップ</span>
+                        </div>
+                        <input type="file" id="model-file-input" accept=".joblib" multiple>
+                    </div>
+                    <div id="uploaded-models" class="uploaded-list"></div>
+                </div>
+
+                <!-- 変数定義テーブル -->
+                <div class="form-group">
+                    <label>設計変数</label>
+                    <table class="var-table" id="var-table">
+                        <thead>
+                            <tr>
+                                <th>変数名</th>
+                                <th>下限</th>
+                                <th>上限</th>
+                                <th>中心値</th>
+                                <th></th>
+                            </tr>
+                        </thead>
+                        <tbody id="var-table-body">
+                            <tr>
+                                <td><input type="text" class="var-name" value="x1" placeholder="変数名"></td>
+                                <td><input type="number" class="var-lo" value="0" step="any"></td>
+                                <td><input type="number" class="var-hi" value="1" step="any"></td>
+                                <td><input type="number" class="var-center" value="0.5" step="any"></td>
+                                <td><button class="btn-icon btn-remove-var" title="削除">&times;</button></td>
+                            </tr>
+                        </tbody>
+                    </table>
+                    <button class="btn-sm" id="btn-add-var">+ 変数を追加</button>
+                </div>
+
+                <!-- 目標値定義 -->
+                <div class="form-group">
+                    <label>目標値（特性名 = モデルのキー名）</label>
+                    <table class="var-table" id="target-table">
+                        <thead>
+                            <tr>
+                                <th>特性名</th>
+                                <th>目標値</th>
+                                <th></th>
+                            </tr>
+                        </thead>
+                        <tbody id="target-table-body">
+                            <tr>
+                                <td><input type="text" class="tgt-name" placeholder="特性A"></td>
+                                <td><input type="number" class="tgt-val" value="0" step="any"></td>
+                                <td><button class="btn-icon btn-remove-tgt" title="削除">&times;</button></td>
+                            </tr>
+                        </tbody>
+                    </table>
+                    <button class="btn-sm" id="btn-add-target">+ 目標を追加</button>
+                </div>
+
+                <!-- 集約モード -->
+                <div class="form-group">
+                    <label>集約モード</label>
+                    <div class="radio-group">
+                        <label class="radio-label">
+                            <input type="radio" name="agg-mode" value="aggregated" checked>
+                            <span>Aggregated（平均逸脱 + 最大逸脱の2目的）<br><small class="hint">推奨: 高速・安定</small></span>
+                        </label>
+                        <label class="radio-label">
+                            <input type="radio" name="agg-mode" value="full">
+                            <span>Full（各特性ごとに目的関数）<br><small class="hint">特性が少ない場合に有効</small></span>
+                        </label>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="actions">
+            <button class="btn btn-primary" id="btn-to-step2" disabled>次へ: 設定</button>
+        </div>
+    </section>
+
+    <!-- ============================================================ -->
+    <!-- STEP 2: アルゴリズム設定                                       -->
+    <!-- ============================================================ -->
+    <section class="panel hidden" id="step2-panel">
+        <h2>Step 2: アルゴリズム設定</h2>
+        <p class="hint">初めての方はデフォルト値のままで問題ありません。</p>
+
+        <div class="settings-grid">
+            <div class="setting-card">
+                <label for="pop-size">母集団サイズ</label>
+                <input type="number" id="pop-size" value="100" min="20" max="1000" step="10">
+                <small class="hint">1世代あたりの解候補の数。大きいほど探索範囲が広がりますが遅くなります。</small>
+            </div>
+            <div class="setting-card">
+                <label for="n-gen">世代数</label>
+                <input type="number" id="n-gen" value="200" min="10" max="5000" step="10">
+                <small class="hint">進化の繰り返し回数。多いほど精度が上がりますが遅くなります。</small>
+            </div>
+            <div class="setting-card">
+                <label for="seed">乱数シード</label>
+                <input type="number" id="seed" value="42" min="0" max="99999">
+                <small class="hint">同じ値なら同じ結果が得られます（再現性）。</small>
+            </div>
+        </div>
+
+        <!-- プリセット -->
+        <div class="presets">
+            <span class="hint">プリセット:</span>
+            <button class="btn-preset" data-pop="50" data-gen="100">高速（低精度）</button>
+            <button class="btn-preset active" data-pop="100" data-gen="200">バランス</button>
+            <button class="btn-preset" data-pop="200" data-gen="500">高精度（低速）</button>
+        </div>
+
+        <div class="actions">
+            <button class="btn btn-secondary" id="btn-back-step1">戻る</button>
+            <button class="btn btn-primary" id="btn-to-step3">次へ: 実行</button>
+        </div>
+    </section>
+
+    <!-- ============================================================ -->
+    <!-- STEP 3: 実行                                                  -->
+    <!-- ============================================================ -->
+    <section class="panel hidden" id="step3-panel">
+        <h2>Step 3: 最適化を実行</h2>
+
+        <div class="run-summary card" id="run-summary">
+            <!-- JS で設定概要を表示 -->
+        </div>
+
+        <div class="run-controls">
+            <button class="btn btn-primary btn-lg" id="btn-start">最適化を開始</button>
+        </div>
+
+        <!-- 進捗表示 -->
+        <div id="progress-area" class="hidden">
+            <div class="progress-info">
+                <span id="progress-text">準備中...</span>
+                <span id="progress-elapsed"></span>
+            </div>
+            <div class="progress-bar-track">
+                <div class="progress-bar-fill" id="progress-bar" style="width: 0%"></div>
+            </div>
+            <div class="progress-details">
+                <span>世代: <strong id="progress-gen">0</strong> / <strong id="progress-gen-total">0</strong></span>
+            </div>
+        </div>
+
+        <!-- エラー表示 -->
+        <div id="error-area" class="hidden">
+            <div class="error-box">
+                <strong>エラーが発生しました</strong>
+                <p id="error-message"></p>
+            </div>
+        </div>
+
+        <div class="actions">
+            <button class="btn btn-secondary" id="btn-back-step2">戻る</button>
+        </div>
+    </section>
+
+    <!-- ============================================================ -->
+    <!-- STEP 4: 結果                                                  -->
+    <!-- ============================================================ -->
+    <section class="panel hidden" id="step4-panel">
+        <h2>Step 4: 最適化結果</h2>
+
+        <!-- サマリーカード -->
+        <div class="result-summary" id="result-summary">
+            <!-- JS で生成 -->
+        </div>
+
+        <!-- タブ切り替え -->
+        <div class="tab-bar">
+            <button class="tab active" data-tab="chart">パレートフロント</button>
+            <button class="tab" data-tab="parallel">パラレルプロット</button>
+            <button class="tab" data-tab="table">解一覧テーブル</button>
+        </div>
+
+        <!-- パレートフロントチャート -->
+        <div class="tab-content active" id="tab-chart">
+            <div id="pareto-chart" class="chart-container"></div>
+        </div>
+
+        <!-- パラレル座標プロット -->
+        <div class="tab-content" id="tab-parallel">
+            <div id="parallel-chart" class="chart-container"></div>
+        </div>
+
+        <!-- テーブル -->
+        <div class="tab-content" id="tab-table">
+            <div class="table-controls">
+                <input type="text" id="table-search" placeholder="検索..." class="table-search">
+                <span id="table-count"></span>
+            </div>
+            <div class="table-wrapper">
+                <table id="result-table" class="result-table">
+                    <thead><tr id="result-table-head"></tr></thead>
+                    <tbody id="result-table-body"></tbody>
+                </table>
+            </div>
+        </div>
+
+        <div class="actions">
+            <button class="btn btn-secondary" id="btn-new">新しい最適化を始める</button>
+            <button class="btn btn-primary" id="btn-download">CSV ダウンロード</button>
+        </div>
+    </section>
+
+</main>
+
+<footer class="footer">
+    <div class="container">
+        NSGA-III 多目的最適化ツール &mdash; pymoo ベース
+    </div>
+</footer>
+
+<script src="/static/js/app.js"></script>
+</body>
+</html>
