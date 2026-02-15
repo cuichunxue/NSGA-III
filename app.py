@@ -6,6 +6,7 @@ Flask ベースの初心者向け最適化ツール。
 デモ問題での即時体験と、カスタム OLS モデルによる本格運用の両方をサポート。
 """
 
+import copy
 import csv
 import io
 import os
@@ -31,6 +32,9 @@ app.json.sort_keys = False  # テーブル列の挿入順序を維持
 UPLOAD_DIR = Path("uploads")
 UPLOAD_DIR.mkdir(exist_ok=True)
 
+# 古いジョブを自動削除するまでの秒数
+_JOB_TTL = 3600  # 1 時間
+
 # ---------------------------------------------------------------------------
 # インメモリジョブストア（シングルプロセス用）
 # ---------------------------------------------------------------------------
@@ -43,6 +47,27 @@ def _update_job(job_id: str, **kwargs):
     with _lock:
         if job_id in _jobs:
             _jobs[job_id].update(kwargs)
+
+
+def _get_job_snapshot(job_id: str):
+    """ロック内でジョブのスナップショットを取得する（スレッドセーフ）。"""
+    with _lock:
+        job = _jobs.get(job_id)
+        if job is None:
+            return None
+        return copy.copy(job)
+
+
+def _cleanup_old_jobs():
+    """TTL 超過のジョブを削除する。"""
+    now = time.time()
+    with _lock:
+        expired = [
+            jid for jid, j in _jobs.items()
+            if now - j["started_at"] > _JOB_TTL and j["status"] != "running"
+        ]
+        for jid in expired:
+            del _jobs[jid]
 
 
 # ---------------------------------------------------------------------------
@@ -65,10 +90,20 @@ def api_demo_problems():
 @app.route("/api/optimize", methods=["POST"])
 def api_optimize():
     """最適化ジョブを開始する。"""
-    config = request.get_json(force=True)
-    job_id = uuid.uuid4().hex[:10]
+    try:
+        config = request.get_json(force=True)
+    except Exception:
+        return jsonify({"error": "無効なJSONリクエストです"}), 400
+
+    if not isinstance(config, dict):
+        return jsonify({"error": "リクエストはJSON辞書である必要があります"}), 400
 
     n_gen = int(config.get("n_gen", 200))
+
+    # 古いジョブを定期的に掃除
+    _cleanup_old_jobs()
+
+    job_id = uuid.uuid4().hex[:10]
 
     with _lock:
         _jobs[job_id] = {
@@ -113,8 +148,7 @@ def _run_job(job_id: str, config: dict):
 
 @app.route("/api/progress/<job_id>")
 def api_progress(job_id: str):
-    with _lock:
-        job = _jobs.get(job_id)
+    job = _get_job_snapshot(job_id)
     if job is None:
         return jsonify({"error": "ジョブが見つかりません"}), 404
 
@@ -134,8 +168,7 @@ def api_progress(job_id: str):
 
 @app.route("/api/results/<job_id>")
 def api_results(job_id: str):
-    with _lock:
-        job = _jobs.get(job_id)
+    job = _get_job_snapshot(job_id)
     if job is None:
         return jsonify({"error": "ジョブが見つかりません"}), 404
     if job["status"] != "completed":
@@ -147,13 +180,12 @@ def api_results(job_id: str):
 
 @app.route("/api/download/<job_id>")
 def api_download(job_id: str):
-    with _lock:
-        job = _jobs.get(job_id)
+    job = _get_job_snapshot(job_id)
     if job is None or job["status"] != "completed":
         return jsonify({"error": "結果がありません"}), 404
 
     result = job["result"]
-    table = result["table"]
+    table = result.get("table", [])
     if not table:
         return jsonify({"error": "データがありません"}), 404
 
@@ -185,11 +217,14 @@ def api_upload_model():
     if not f.filename:
         return jsonify({"error": "ファイル名が空です"}), 400
 
+    # 拡張子を検証
+    if not f.filename.endswith(".joblib"):
+        return jsonify({"error": ".joblib ファイルのみアップロード可能です"}), 400
+
     safe_name = f"{uuid.uuid4().hex[:8]}_{f.filename}"
     save_path = UPLOAD_DIR / safe_name
     f.save(str(save_path))
 
-    # モデル情報を返す
     try:
         import joblib
 
@@ -202,12 +237,12 @@ def api_upload_model():
             "filename": f.filename,
             "features": features,
         })
-    except Exception as exc:
+    except Exception:
         save_path.unlink(missing_ok=True)
-        return jsonify({"error": f"モデルの読み込みに失敗: {exc}"}), 400
+        return jsonify({"error": "モデルの読み込みに失敗しました。有効な joblib ファイルか確認してください。"}), 400
 
 
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    app.run(debug=True, host="0.0.0.0", port=5000)
+    app.run(debug=False, host="0.0.0.0", port=5000)

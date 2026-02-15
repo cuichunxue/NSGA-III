@@ -55,9 +55,9 @@
             card.className = "demo-card";
             card.dataset.key = key;
             card.innerHTML = `
-                <h3>${info.name}</h3>
-                <p>${info.description}</p>
-                <span class="badge">${info.n_obj}目的 / ${info.n_var}変数</span>
+                <h3>${escapeHtml(info.name)}</h3>
+                <p>${escapeHtml(info.description)}</p>
+                <span class="badge">${Number(info.n_obj)}目的 / ${Number(info.n_var)}変数</span>
             `;
             card.addEventListener("click", () => selectDemoCard(key));
             grid.appendChild(card);
@@ -162,25 +162,32 @@
         e.target.value = "";
     }
 
+    function escapeHtml(str) {
+        const d = document.createElement("div");
+        d.textContent = str;
+        return d.innerHTML;
+    }
+
     function renderUploadedModels() {
         const el = $("#uploaded-models");
         el.innerHTML = S.uploadedModels
             .map(
                 (m, i) => `
             <div class="uploaded-item">
-                <span>${m.filename} (${m.features.length} 特徴量)</span>
-                <button class="btn-icon" onclick="removeModel(${i})">&times;</button>
+                <span>${escapeHtml(m.filename)} (${m.features.length} 特徴量)</span>
+                <button class="btn-icon" data-idx="${i}" title="削除">&times;</button>
             </div>
         `
             )
             .join("");
+        // イベントデリゲーション（inline onclick を回避）
+        el.querySelectorAll(".btn-icon").forEach((btn) => {
+            btn.addEventListener("click", () => {
+                S.uploadedModels.splice(parseInt(btn.dataset.idx), 1);
+                renderUploadedModels();
+            });
+        });
     }
-
-    // グローバルに公開
-    window.removeModel = function (idx) {
-        S.uploadedModels.splice(idx, 1);
-        renderUploadedModels();
-    };
 
     // ----- プリセット ------------------------------------------------
     function bindPresets() {

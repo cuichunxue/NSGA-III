@@ -49,8 +49,8 @@ DEMO_PROBLEMS = {
     },
     "dtlz2": {
         "name": "DTLZ2",
-        "description": "球面パレートフロント（3目的・12変数）。3D可視化が可能。",
-        "n_var": 12,
+        "description": "球面パレートフロント（3目的・10変数）。3D可視化が可能。",
+        "n_var": 10,
         "n_obj": 3,
         "obj_names": ["f1", "f2", "f3"],
     },
@@ -124,6 +124,9 @@ class OptimizationRunner:
 
     def _run_demo(self) -> Dict[str, Any]:
         problem_key = self.config.get("problem", "zdt1")
+        if problem_key not in DEMO_PROBLEMS:
+            raise ValueError(f"不明なデモ問題: {problem_key}（選択可能: {', '.join(DEMO_PROBLEMS)}）")
+
         pop_size = int(self.config.get("pop_size", 100))
         n_gen = int(self.config.get("n_gen", 200))
         seed = int(self.config.get("seed", 42))
