@@ -300,21 +300,20 @@ def _extract_target_name(filename: str) -> str:
 
 
 def _extract_variable_names(features: list) -> list:
-    """OLS モデルの特徴量名から設計変数名を抽出する。"""
+    """OLS モデルの特徴量名から設計因子（一次項のみ）を抽出する。
+
+    設計因子 = 全回帰モデルの一次項に登場するユニークな変数名。
+    二乗項 (VAR^2 (centered)) や交互作用項 (VAR1:VAR2 (centered)) は
+    既存の一次項変数から特徴量を構築するため、ここでは抽出しない。
+    """
     var_names = set()
     for feat in features:
         if feat == "const":
             continue
-        # 二乗項: "VAR^2 (centered)"
+        # 二乗項・交互作用項はスキップ（一次項のみ抽出）
         if "^2" in feat and "(centered)" in feat:
-            var_name = feat.split("^2")[0]
-            var_names.add(var_name)
             continue
-        # 交互作用項: "VAR1:VAR2 (centered)"
         if ":" in feat and "(centered)" in feat:
-            vars_part = feat.replace(" (centered)", "")
-            for part in vars_part.split(":"):
-                var_names.add(part)
             continue
         # 一次項（変数名そのもの）
         var_names.add(feat)
