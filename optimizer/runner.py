@@ -174,6 +174,7 @@ class OptimizationRunner:
         n_gen = int(self.config.get("n_gen", 300))
         seed = int(self.config.get("seed", 42))
         agg_mode = self.config.get("aggregation_mode", "aggregated")
+        dev_mode = self.config.get("deviation_mode", "absolute")
 
         variable_names = list(variables.keys())
         xl = np.array([v[0] for v in variables.values()])
@@ -184,7 +185,7 @@ class OptimizationRunner:
         if not predictor.target_names:
             raise RuntimeError("有効なモデルがロードされませんでした。ファイルパスを確認してください。")
 
-        obj_calculator = ObjectiveCalculator(predictor, targets, agg_mode)
+        obj_calculator = ObjectiveCalculator(predictor, targets, agg_mode, dev_mode)
         problem = MultiObjectiveProblem(obj_calculator, xl, xu)
         n_obj = obj_calculator.get_n_objectives()
 

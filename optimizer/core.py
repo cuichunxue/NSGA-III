@@ -131,10 +131,12 @@ class ObjectiveCalculator:
         predictor: OLSModelPredictor,
         targets: Dict[str, float],
         aggregation_mode: str,
+        deviation_mode: str = "absolute",
     ):
         self.predictor = predictor
         self.targets = targets
         self.aggregation_mode = aggregation_mode
+        self.deviation_mode = deviation_mode
         self.target_names = predictor.target_names
 
     def compute_objectives(self, X: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
@@ -142,7 +144,11 @@ class ObjectiveCalculator:
         deviations = np.zeros_like(Y)
         for i, name in enumerate(self.target_names):
             target = self.targets.get(name, 0.0)
-            deviations[:, i] = np.abs(Y[:, i] - target)
+            abs_dev = np.abs(Y[:, i] - target)
+            if self.deviation_mode == "normalized" and abs(target) > 1e-12:
+                deviations[:, i] = abs_dev / abs(target)
+            else:
+                deviations[:, i] = abs_dev
 
         if self.aggregation_mode == "full":
             return deviations, Y

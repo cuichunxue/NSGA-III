@@ -128,6 +128,21 @@
                     <button class="btn-sm" id="btn-add-target">+ 目標を追加</button>
                 </div>
 
+                <!-- 偏差モード -->
+                <div class="form-group">
+                    <label>偏差の計算方法</label>
+                    <div class="radio-group">
+                        <label class="radio-label">
+                            <input type="radio" name="dev-mode" value="normalized" checked>
+                            <span>正規化偏差 |Y-T|/|T|<br><small class="hint">推奨: 目標値のスケールが異なる場合に公平（target=0 は絶対偏差にフォールバック）</small></span>
+                        </label>
+                        <label class="radio-label">
+                            <input type="radio" name="dev-mode" value="absolute">
+                            <span>絶対偏差 |Y-T|<br><small class="hint">全特性が同じスケールの場合に適切</small></span>
+                        </label>
+                    </div>
+                </div>
+
                 <!-- 集約モード -->
                 <div class="form-group">
                     <label>集約モード</label>

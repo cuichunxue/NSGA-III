@@ -349,6 +349,7 @@
         });
 
         const aggMode = document.querySelector('input[name="agg-mode"]:checked').value;
+        const devMode = document.querySelector('input[name="dev-mode"]:checked').value;
 
         return {
             mode: "custom",
@@ -356,6 +357,7 @@
             model_paths: modelPaths,
             targets,
             aggregation_mode: aggMode,
+            deviation_mode: devMode,
             pop_size: pop,
             n_gen: gen,
             seed: seed,
