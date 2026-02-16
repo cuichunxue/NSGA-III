@@ -116,17 +116,37 @@
             const row = document.createElement("tr");
             row.innerHTML = `
                 <td><input type="text" class="tgt-name" placeholder="特性名"></td>
+                <td>
+                    <select class="tgt-direction">
+                        <option value="target">目標値に近づける</option>
+                        <option value="maximize">最大化</option>
+                        <option value="minimize">最小化</option>
+                    </select>
+                </td>
                 <td><input type="number" class="tgt-val" value="0" step="any"></td>
                 <td><button class="btn-icon btn-remove-tgt" title="削除">&times;</button></td>
             `;
             $("#target-table-body").appendChild(row);
             bindRemoveButtons();
+            bindDirectionToggles();
         });
 
         // モデルアップロード
         $("#model-file-input").addEventListener("change", handleModelUpload);
 
         bindRemoveButtons();
+        bindDirectionToggles();
+    }
+
+    function bindDirectionToggles() {
+        $$("#target-table-body .tgt-direction").forEach((sel) => {
+            sel.onchange = () => {
+                const valInput = sel.closest("tr").querySelector(".tgt-val");
+                const isTarget = sel.value === "target";
+                valInput.disabled = !isTarget;
+                if (!isTarget) valInput.value = "";
+            };
+        });
     }
 
     function bindRemoveButtons() {
@@ -268,6 +288,13 @@
                 const row = document.createElement("tr");
                 row.innerHTML = `
                     <td><input type="text" class="tgt-name" value="${escapeHtml(tgtName)}" placeholder="特性名"></td>
+                    <td>
+                        <select class="tgt-direction">
+                            <option value="target">目標値に近づける</option>
+                            <option value="maximize">最大化</option>
+                            <option value="minimize">最小化</option>
+                        </select>
+                    </td>
                     <td><input type="number" class="tgt-val" value="0" step="any"></td>
                     <td><button class="btn-icon btn-remove-tgt" title="削除">&times;</button></td>
                 `;
@@ -276,6 +303,7 @@
         });
 
         bindRemoveButtons();
+        bindDirectionToggles();
     }
 
     /**
@@ -316,9 +344,15 @@
 
         // ユーザーが定義した目標値を収集
         const definedTargets = new Set();
+        const definedDirections = {};
         $$("#target-table-body tr").forEach((row) => {
             const name = row.querySelector(".tgt-name").value.trim();
-            if (name) definedTargets.add(name);
+            const dir = row.querySelector(".tgt-direction").value;
+            const val = row.querySelector(".tgt-val").value;
+            if (name) {
+                definedTargets.add(name);
+                definedDirections[name] = { direction: dir, value: val };
+            }
         });
 
         // チェック1: モデルの目的変数に対応する目標値が全て定義されているか
@@ -359,6 +393,13 @@
         // チェック6: 目標値が0個
         if (definedTargets.size === 0) {
             errors.push("目標値が1つも定義されていません。");
+        }
+
+        // チェック7: 「目標値に近づける」方向で目標値が空
+        for (const [name, info] of Object.entries(definedDirections)) {
+            if (info.direction === "target" && (info.value === "" || isNaN(parseFloat(info.value)))) {
+                errors.push(`「${name}」の方向が「目標値に近づける」ですが、目標値が未入力です。`);
+            }
         }
 
         return errors;
@@ -547,10 +588,15 @@
         });
 
         const targets = {};
+        const directions = {};
         $$("#target-table-body tr").forEach((row) => {
             const name = row.querySelector(".tgt-name").value.trim();
             const val = parseFloat(row.querySelector(".tgt-val").value);
-            if (name) targets[name] = val;
+            const dir = row.querySelector(".tgt-direction").value;
+            if (name) {
+                targets[name] = dir === "target" ? val : 0;
+                directions[name] = dir;
+            }
         });
 
         const modelPaths = {};
@@ -568,6 +614,7 @@
             variables,
             model_paths: modelPaths,
             targets,
+            directions,
             aggregation_mode: aggMode,
             deviation_mode: devMode,
             pop_size: pop,
@@ -923,22 +970,38 @@
         // カスタムモード: 回帰予測値 vs 目標値
         if (data.predictions && Object.keys(data.predictions).length > 0) {
             html += '<table class="predict-table"><thead><tr>';
-            html += '<th>特性</th><th>回帰予測値</th><th>目標値</th><th>偏差</th><th>相対誤差</th>';
+            html += '<th>特性</th><th>方向</th><th>回帰予測値</th><th>目標値</th><th>偏差</th><th>相対誤差</th>';
             html += '</tr></thead><tbody>';
             for (const [name, info] of Object.entries(data.predictions)) {
-                const devPct = info.target !== 0 ? Math.abs(info.abs_deviation / info.target * 100) : null;
-                let cls = "pr-good";
-                if (devPct !== null) {
-                    if (devPct > 10) cls = "pr-bad";
-                    else if (devPct > 3) cls = "pr-warn";
+                const direction = info.direction || "target";
+                const dirLabel = direction === "maximize" ? "最大化" : direction === "minimize" ? "最小化" : "目標値";
+
+                if (direction === "target") {
+                    const devPct = info.target !== 0 && info.target != null
+                        ? Math.abs(info.abs_deviation / info.target * 100) : null;
+                    let cls = "pr-good";
+                    if (devPct !== null) {
+                        if (devPct > 10) cls = "pr-bad";
+                        else if (devPct > 3) cls = "pr-warn";
+                    }
+                    html += `<tr>`;
+                    html += `<td class="pr-label">${escapeHtml(name)}</td>`;
+                    html += `<td>${dirLabel}</td>`;
+                    html += `<td class="${cls}">${info.predicted}</td>`;
+                    html += `<td>${info.target}</td>`;
+                    html += `<td>${info.abs_deviation}</td>`;
+                    html += `<td class="${cls}">${devPct !== null ? devPct.toFixed(2) + "%" : "-"}</td>`;
+                    html += `</tr>`;
+                } else {
+                    html += `<tr>`;
+                    html += `<td class="pr-label">${escapeHtml(name)}</td>`;
+                    html += `<td>${dirLabel}</td>`;
+                    html += `<td>${info.predicted}</td>`;
+                    html += `<td>-</td>`;
+                    html += `<td>-</td>`;
+                    html += `<td>-</td>`;
+                    html += `</tr>`;
                 }
-                html += `<tr>`;
-                html += `<td class="pr-label">${escapeHtml(name)}</td>`;
-                html += `<td class="${cls}">${info.predicted}</td>`;
-                html += `<td>${info.target}</td>`;
-                html += `<td>${info.abs_deviation}</td>`;
-                html += `<td class="${cls}">${devPct !== null ? devPct.toFixed(2) + "%" : "-"}</td>`;
-                html += `</tr>`;
             }
             html += '</tbody></table>';
         }

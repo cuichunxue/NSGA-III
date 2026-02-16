@@ -226,6 +226,18 @@ input:focus { outline: none; border-color: var(--blue-500); box-shadow: 0 0 0 3p
 }
 .var-table td { padding: .3rem .3rem; }
 .var-table input { width: 100%; }
+.var-table select {
+    width: 100%;
+    padding: .35rem .4rem;
+    font-size: .85rem;
+    border: 1px solid var(--gray-300);
+    border-radius: 4px;
+    background: var(--white);
+}
+.var-table input:disabled {
+    background: var(--gray-100);
+    color: var(--gray-500);
+}
 
 /* --- アップロード -------------------------------------------------- */
 .upload-area {

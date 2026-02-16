@@ -379,6 +379,16 @@ def _validate_custom_config(config: dict) -> str | None:
         if lo >= hi:
             return f"設計変数「{var_name}」の下限 ({lo}) が上限 ({hi}) 以上です。"
 
+    # directions の検証（オプション）
+    directions = config.get("directions", {})
+    valid_directions = {"target", "maximize", "minimize"}
+    for name, direction in directions.items():
+        if direction not in valid_directions:
+            return (
+                f"目的変数「{name}」の方向「{direction}」が不正です。"
+                f"有効な値: {', '.join(sorted(valid_directions))}"
+            )
+
     return None
 
 

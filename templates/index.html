@@ -112,12 +112,13 @@
                 <!-- 目標値定義 -->
                 <div class="form-group">
                     <label>目的変数（目標値）</label>
-                    <p class="hint">各モデルに対応する特性名と目標値です。モデルアップロード時に自動追加されます。目標値は手動で設定してください。<br>
+                    <p class="hint">各モデルに対応する特性名と最適化方向を設定します。モデルアップロード時に自動追加されます。<br>
                     特性名はモデル名と完全一致する必要があります（例: <code>ols_硬度.joblib</code> → 特性名「硬度」）。</p>
                     <table class="var-table" id="target-table">
                         <thead>
                             <tr>
                                 <th>特性名</th>
+                                <th>方向</th>
                                 <th>目標値</th>
                                 <th></th>
                             </tr>
@@ -125,6 +126,13 @@
                         <tbody id="target-table-body">
                             <tr>
                                 <td><input type="text" class="tgt-name" placeholder="特性A"></td>
+                                <td>
+                                    <select class="tgt-direction">
+                                        <option value="target">目標値に近づける</option>
+                                        <option value="maximize">最大化</option>
+                                        <option value="minimize">最小化</option>
+                                    </select>
+                                </td>
                                 <td><input type="number" class="tgt-val" value="0" step="any"></td>
                                 <td><button class="btn-icon btn-remove-tgt" title="削除">&times;</button></td>
                             </tr>

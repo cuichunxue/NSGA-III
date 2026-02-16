@@ -8,7 +8,7 @@ joblib保存済み sm.OLS モデルを用いたパレート最適解の探索、
 import numpy as np
 import warnings
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import joblib
 from pymoo.core.problem import Problem
@@ -124,7 +124,13 @@ class OLSModelPredictor:
 
 
 class ObjectiveCalculator:
-    """目的関数値（目標値からの逸脱量）を計算する。"""
+    """目的関数値を計算する。
+
+    各目的変数に対して以下の方向をサポート:
+      - "target": 目標値からの逸脱量 |Y - target| を最小化（既定）
+      - "maximize": 予測値 Y を最大化（内部的には -Y を最小化）
+      - "minimize": 予測値 Y を最小化
+    """
 
     def __init__(
         self,
@@ -132,30 +138,50 @@ class ObjectiveCalculator:
         targets: Dict[str, float],
         aggregation_mode: str,
         deviation_mode: str = "absolute",
+        directions: Optional[Dict[str, str]] = None,
     ):
         self.predictor = predictor
         self.targets = targets
-        self.aggregation_mode = aggregation_mode
         self.deviation_mode = deviation_mode
         self.target_names = predictor.target_names
+        self.directions = directions or {}
+
+        # maximize/minimize が含まれる場合は aggregated モードが意味をなさないため
+        # 自動的に full モードに切り替える
+        has_non_target = any(
+            self.directions.get(name, "target") != "target"
+            for name in self.target_names
+        )
+        if has_non_target and aggregation_mode == "aggregated":
+            self.aggregation_mode = "full"
+        else:
+            self.aggregation_mode = aggregation_mode
 
     def compute_objectives(self, X: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
         Y, _ = self.predictor.predict(X)
-        deviations = np.zeros_like(Y)
+        objectives = np.zeros_like(Y)
+
         for i, name in enumerate(self.target_names):
-            target = self.targets.get(name, 0.0)
-            abs_dev = np.abs(Y[:, i] - target)
-            if self.deviation_mode == "normalized" and abs(target) > 1e-12:
-                deviations[:, i] = abs_dev / abs(target)
-            else:
-                deviations[:, i] = abs_dev
+            direction = self.directions.get(name, "target")
+
+            if direction == "maximize":
+                objectives[:, i] = -Y[:, i]
+            elif direction == "minimize":
+                objectives[:, i] = Y[:, i]
+            else:  # "target"
+                target = self.targets.get(name, 0.0)
+                abs_dev = np.abs(Y[:, i] - target)
+                if self.deviation_mode == "normalized" and abs(target) > 1e-12:
+                    objectives[:, i] = abs_dev / abs(target)
+                else:
+                    objectives[:, i] = abs_dev
 
         if self.aggregation_mode == "full":
-            return deviations, Y
+            return objectives, Y
         else:
-            mean_dev = np.mean(deviations, axis=1, keepdims=True)
-            max_dev = np.max(deviations, axis=1, keepdims=True)
-            return np.hstack([mean_dev, max_dev]), Y
+            mean_obj = np.mean(objectives, axis=1, keepdims=True)
+            max_obj = np.max(objectives, axis=1, keepdims=True)
+            return np.hstack([mean_obj, max_obj]), Y
 
     def get_n_objectives(self) -> int:
         if self.aggregation_mode == "full":
@@ -164,7 +190,16 @@ class ObjectiveCalculator:
 
     def get_objective_names(self) -> List[str]:
         if self.aggregation_mode == "full":
-            return [f"dev_{name}" for name in self.target_names]
+            names = []
+            for name in self.target_names:
+                direction = self.directions.get(name, "target")
+                if direction == "maximize":
+                    names.append(f"neg_{name}")
+                elif direction == "minimize":
+                    names.append(name)
+                else:
+                    names.append(f"dev_{name}")
+            return names
         return ["mean_dev", "max_dev"]
 
 

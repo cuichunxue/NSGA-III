@@ -101,6 +101,7 @@ def predict_single(config: Dict[str, Any], values: Dict[str, float]) -> Dict[str
     model_paths = config["model_paths"]
     targets = config["targets"]
     dev_mode = config.get("deviation_mode", "absolute")
+    directions = config.get("directions", {})
 
     variable_names = list(variables.keys())
     center_values = {k: v[2] for k, v in variables.items()}
@@ -114,18 +115,29 @@ def predict_single(config: Dict[str, Any], values: Dict[str, float]) -> Dict[str
         result["variables"][name] = round(float(X[0, i]), 6)
     for i, name in enumerate(target_names):
         pred_val = float(Y[0, i])
+        direction = directions.get(name, "target")
         target_val = targets.get(name, 0.0)
-        abs_dev = abs(pred_val - target_val)
-        if dev_mode == "normalized" and abs(target_val) > 1e-12:
-            dev = abs_dev / abs(target_val)
-        else:
-            dev = abs_dev
-        result["predictions"][name] = {
+
+        entry = {
             "predicted": round(pred_val, 6),
-            "target": target_val,
-            "abs_deviation": round(abs_dev, 6),
-            "deviation": round(dev, 6),
+            "direction": direction,
         }
+
+        if direction == "target":
+            abs_dev = abs(pred_val - target_val)
+            if dev_mode == "normalized" and abs(target_val) > 1e-12:
+                dev = abs_dev / abs(target_val)
+            else:
+                dev = abs_dev
+            entry["target"] = target_val
+            entry["abs_deviation"] = round(abs_dev, 6)
+            entry["deviation"] = round(dev, 6)
+        else:
+            entry["target"] = None
+            entry["abs_deviation"] = None
+            entry["deviation"] = None
+
+        result["predictions"][name] = entry
     return result
 
 
@@ -255,6 +267,7 @@ class OptimizationRunner:
         seed = int(self.config.get("seed", 42))
         agg_mode = self.config.get("aggregation_mode", "aggregated")
         dev_mode = self.config.get("deviation_mode", "absolute")
+        directions = self.config.get("directions", {})
 
         variable_names = list(variables.keys())
         xl = np.array([v[0] for v in variables.values()])
@@ -265,7 +278,9 @@ class OptimizationRunner:
         if not predictor.target_names:
             raise RuntimeError("有効なモデルがロードされませんでした。ファイルパスを確認してください。")
 
-        obj_calculator = ObjectiveCalculator(predictor, targets, agg_mode, dev_mode)
+        obj_calculator = ObjectiveCalculator(
+            predictor, targets, agg_mode, dev_mode, directions,
+        )
         problem = MultiObjectiveProblem(obj_calculator, xl, xu)
         n_obj = obj_calculator.get_n_objectives()
 
@@ -295,6 +310,7 @@ class OptimizationRunner:
         return self._build_result(
             pareto_X, pareto_F, variable_names, obj_names,
             predictions=pareto_Y, target_names=target_names, targets=targets,
+            directions=directions,
         )
 
     # ---- helpers ----------------------------------------------------------
@@ -322,8 +338,10 @@ class OptimizationRunner:
         predictions: Optional[np.ndarray] = None,
         target_names: Optional[List[str]] = None,
         targets: Optional[Dict[str, float]] = None,
+        directions: Optional[Dict[str, str]] = None,
     ) -> Dict[str, Any]:
         """結果を JSON シリアライズ可能な辞書に整形。"""
+        directions = directions or {}
         n_solutions = len(pareto_X)
 
         # 変数値
@@ -342,10 +360,12 @@ class OptimizationRunner:
         if predictions is not None and target_names is not None and targets is not None:
             for i, name in enumerate(target_names):
                 predictions_data[f"pred_{name}"] = predictions[:, i].tolist()
-                target_val = targets.get(name, 0.0)
-                deviations_data[f"dev_{name}"] = np.abs(
-                    predictions[:, i] - target_val
-                ).tolist()
+                direction = directions.get(name, "target")
+                if direction == "target":
+                    target_val = targets.get(name, 0.0)
+                    deviations_data[f"dev_{name}"] = np.abs(
+                        predictions[:, i] - target_val
+                    ).tolist()
 
         # サマリー統計
         summary = {
@@ -396,6 +416,7 @@ class OptimizationRunner:
             "objectives": objectives_data,
             "predictions": predictions_data,
             "deviations": deviations_data,
+            "directions": directions,
             "summary": summary,
             "table": table_rows,
         }
