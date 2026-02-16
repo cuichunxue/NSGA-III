@@ -16,6 +16,7 @@
         resultData: null,
         sortCol: null,
         sortAsc: true,
+        predictRefRow: null,  // 予測比較用のパレート解参照値
     };
 
     // ----- DOM refs ----------------------------------------------------
@@ -631,6 +632,7 @@
         const varNames = d.var_names || [];
         // 最初の解の値をデフォルトとして使用
         const firstRow = (d.table && d.table[0]) || {};
+        S.predictRefRow = firstRow;
         for (const name of varNames) {
             const val = firstRow[name] != null ? firstRow[name] : 0;
             const row = document.createElement("div");
@@ -651,7 +653,7 @@
 
     function populatePredictFromRow(row) {
         if (!S.resultData) return;
-        const varNames = S.resultData.var_names || [];
+        S.predictRefRow = row;
         // querySelectorAll で全入力を走査（CSS セレクタの特殊文字問題を回避）
         const inputs = document.querySelectorAll("#predict-var-inputs input[data-var]");
         inputs.forEach((input) => {
@@ -705,37 +707,48 @@
 
     function renderPredictOutput(data) {
         const out = $("#predict-output");
+        const ref = S.predictRefRow || {};
         let html = "";
 
-        // 目的関数値（デモモード）
-        if (data.objectives) {
-            html += '<div class="predict-result-card"><div class="pr-name">目的関数値</div>';
-            for (const [name, val] of Object.entries(data.objectives)) {
-                html += `<div class="pr-row"><span class="pr-label">${escapeHtml(name)}</span><span class="pr-val">${val}</span></div>`;
-            }
-            html += "</div>";
-        }
-
-        // 予測値（カスタムモード）
-        if (data.predictions) {
+        // カスタムモード: 回帰予測値 vs 目標値
+        if (data.predictions && Object.keys(data.predictions).length > 0) {
+            html += '<table class="predict-table"><thead><tr>';
+            html += '<th>特性</th><th>回帰予測値</th><th>目標値</th><th>偏差</th><th>相対誤差</th>';
+            html += '</tr></thead><tbody>';
             for (const [name, info] of Object.entries(data.predictions)) {
                 const devPct = info.target !== 0 ? Math.abs(info.abs_deviation / info.target * 100) : null;
-                let colorClass = "pr-good";
+                let cls = "pr-good";
                 if (devPct !== null) {
-                    if (devPct > 10) colorClass = "pr-bad";
-                    else if (devPct > 3) colorClass = "pr-warn";
+                    if (devPct > 10) cls = "pr-bad";
+                    else if (devPct > 3) cls = "pr-warn";
                 }
-                html += `<div class="predict-result-card">`;
-                html += `<div class="pr-name">${escapeHtml(name)}</div>`;
-                html += `<div class="pr-row"><span class="pr-label">目標値</span><span class="pr-val">${info.target}</span></div>`;
-                html += `<div class="pr-row"><span class="pr-label">予測値</span><span class="pr-val ${colorClass}">${info.predicted}</span></div>`;
-                html += `<div class="pr-row"><span class="pr-label">絶対偏差</span><span class="pr-val">${info.abs_deviation}</span></div>`;
-                html += `<div class="pr-row"><span class="pr-label">偏差指標</span><span class="pr-val">${info.deviation}</span></div>`;
-                if (devPct !== null) {
-                    html += `<div class="pr-row"><span class="pr-label">相対誤差</span><span class="pr-val ${colorClass}">${devPct.toFixed(2)}%</span></div>`;
-                }
-                html += `</div>`;
+                html += `<tr>`;
+                html += `<td class="pr-label">${escapeHtml(name)}</td>`;
+                html += `<td class="${cls}">${info.predicted}</td>`;
+                html += `<td>${info.target}</td>`;
+                html += `<td>${info.abs_deviation}</td>`;
+                html += `<td class="${cls}">${devPct !== null ? devPct.toFixed(2) + "%" : "-"}</td>`;
+                html += `</tr>`;
             }
+            html += '</tbody></table>';
+        }
+
+        // デモモード: 目的関数評価値 vs パレート解の値
+        if (data.objectives && Object.keys(data.objectives).length > 0) {
+            html += '<table class="predict-table"><thead><tr>';
+            html += '<th>目的関数</th><th>計算値</th><th>パレート解の値</th><th>差分</th>';
+            html += '</tr></thead><tbody>';
+            for (const [name, val] of Object.entries(data.objectives)) {
+                const refVal = ref[name];
+                const diff = refVal != null ? Math.abs(val - refVal) : null;
+                html += `<tr>`;
+                html += `<td class="pr-label">${escapeHtml(name)}</td>`;
+                html += `<td>${val}</td>`;
+                html += `<td>${refVal != null ? refVal : "-"}</td>`;
+                html += `<td>${diff != null ? diff.toFixed(6) : "-"}</td>`;
+                html += `</tr>`;
+            }
+            html += '</tbody></table>';
         }
 
         out.innerHTML = html || '<p class="hint">予測結果がありません。</p>';

@@ -530,25 +530,30 @@ input:focus { outline: none; border-color: var(--blue-500); box-shadow: 0 0 0 3p
 .predict-var-row input:focus { border-color: var(--blue-500); outline: none; }
 #btn-predict { margin-top: .8rem; }
 
-.predict-result-card {
-    border: 1px solid var(--gray-300);
-    border-radius: var(--radius);
-    padding: .8rem;
-    margin-bottom: .6rem;
-}
-.predict-result-card .pr-name {
-    font-weight: 700;
-    font-size: .9rem;
-    margin-bottom: .3rem;
-}
-.predict-result-card .pr-row {
-    display: flex;
-    justify-content: space-between;
+.predict-table {
+    width: 100%;
+    border-collapse: collapse;
     font-size: .82rem;
-    padding: .1rem 0;
+    margin-bottom: .8rem;
 }
-.predict-result-card .pr-row .pr-label { color: var(--gray-700); }
-.predict-result-card .pr-row .pr-val { font-family: var(--mono); font-weight: 600; }
+.predict-table th {
+    background: var(--gray-100);
+    font-weight: 700;
+    text-align: left;
+    padding: .45rem .6rem;
+    border-bottom: 2px solid var(--gray-300);
+    white-space: nowrap;
+}
+.predict-table td {
+    padding: .4rem .6rem;
+    border-bottom: 1px solid var(--gray-200);
+    font-family: var(--mono);
+}
+.predict-table td.pr-label {
+    font-family: inherit;
+    font-weight: 600;
+    color: var(--gray-700);
+}
 .pr-good { color: var(--green); }
 .pr-warn { color: var(--orange); }
 .pr-bad { color: var(--red); }
