@@ -411,6 +411,7 @@
         try {
             const res = await fetch(`/api/results/${S.jobId}`);
             S.resultData = await res.json();
+            if (S.resultData.error) throw new Error(S.resultData.error);
             goToStep(4);
             renderResults();
         } catch (e) {
@@ -421,11 +422,11 @@
     // ----- 結果レンダリング ----------------------------------------------
     function renderResults() {
         const d = S.resultData;
-        renderSummary(d);
-        renderParetoChart(d);
-        renderParallelChart(d);
-        renderTable(d);
-        renderPredictInputs(d);
+        try { renderSummary(d); } catch (e) { console.error("renderSummary:", e); }
+        try { renderParetoChart(d); } catch (e) { console.error("renderParetoChart:", e); }
+        try { renderParallelChart(d); } catch (e) { console.error("renderParallelChart:", e); }
+        try { renderTable(d); } catch (e) { console.error("renderTable:", e); }
+        try { renderPredictInputs(d); } catch (e) { console.error("renderPredictInputs:", e); }
     }
 
     function renderSummary(d) {
@@ -626,9 +627,9 @@
     function renderPredictInputs(d) {
         const container = $("#predict-var-inputs");
         container.innerHTML = "";
-        const varNames = d.var_names;
+        const varNames = d.var_names || [];
         // 最初の解の値をデフォルトとして使用
-        const firstRow = d.table[0] || {};
+        const firstRow = (d.table && d.table[0]) || {};
         for (const name of varNames) {
             const val = firstRow[name] != null ? firstRow[name] : 0;
             const row = document.createElement("div");
@@ -640,35 +641,40 @@
             container.appendChild(row);
         }
 
-        // 予測ボタン
-        $("#btn-predict").addEventListener("click", runPredict);
+        // 予測ボタン（重複回避のため onclick を使用）
+        $("#btn-predict").onclick = runPredict;
+
+        // 予測結果をリセット
+        $("#predict-output").innerHTML = '<p class="hint">変数値を入力して「予測」ボタンを押してください。</p>';
     }
 
     function populatePredictFromRow(row) {
         if (!S.resultData) return;
-        const varNames = S.resultData.var_names;
-        for (const name of varNames) {
-            const input = document.querySelector(`#predict-var-inputs input[data-var="${name}"]`);
-            if (input && row[name] != null) {
-                input.value = row[name];
-            }
-        }
+        const varNames = S.resultData.var_names || [];
+        // querySelectorAll で全入力を走査（CSS セレクタの特殊文字問題を回避）
+        const inputs = document.querySelectorAll("#predict-var-inputs input[data-var]");
+        inputs.forEach((input) => {
+            const vname = input.getAttribute("data-var");
+            if (row[vname] != null) input.value = row[vname];
+        });
         // タブを予測シミュレータに切り替え
         $$(".tab").forEach((t) => t.classList.remove("active"));
         $$(".tab-content").forEach((c) => c.classList.remove("active"));
-        document.querySelector('.tab[data-tab="predict"]').classList.add("active");
-        $("#tab-predict").classList.add("active");
+        const predictTab = document.querySelector('.tab[data-tab="predict"]');
+        if (predictTab) predictTab.classList.add("active");
+        const predictContent = $("#tab-predict");
+        if (predictContent) predictContent.classList.add("active");
     }
 
     async function runPredict() {
         if (!S.jobId || !S.resultData) return;
 
         const values = {};
-        const varNames = S.resultData.var_names;
-        for (const name of varNames) {
-            const input = document.querySelector(`#predict-var-inputs input[data-var="${name}"]`);
-            if (input) values[name] = parseFloat(input.value) || 0;
-        }
+        const inputs = document.querySelectorAll("#predict-var-inputs input[data-var]");
+        inputs.forEach((input) => {
+            const name = input.getAttribute("data-var");
+            values[name] = parseFloat(input.value) || 0;
+        });
 
         const btn = $("#btn-predict");
         btn.disabled = true;
