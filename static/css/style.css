@@ -399,6 +399,8 @@ input:focus { outline: none; border-color: var(--blue-500); box-shadow: 0 0 0 3p
     border-left: 4px solid var(--red);
 }
 .error-box p { margin-top: .3rem; font-size: .9rem; color: var(--gray-900); }
+.error-box ul { margin: .4rem 0 0 1.2rem; font-size: .85rem; color: var(--gray-900); }
+.error-box li { margin-bottom: .2rem; }
 
 /* --- 結果サマリー -------------------------------------------------- */
 .result-summary {

@@ -70,6 +70,8 @@
                 <!-- モデルアップロード -->
                 <div class="form-group">
                     <label>モデルファイル (.joblib)</label>
+                    <p class="hint">ファイル名の命名規則: <code>ols_特性名.joblib</code>（例: <code>ols_硬度.joblib</code>）<br>
+                    アップロードすると設計変数と目的変数（目標値）が自動的に抽出・補完されます。</p>
                     <div class="upload-area" id="upload-area">
                         <div id="upload-prompt">
                             <span class="upload-icon">+</span>
@@ -82,7 +84,8 @@
 
                 <!-- 変数定義テーブル -->
                 <div class="form-group">
-                    <label>設計変数</label>
+                    <label>設計変数（設計因子）</label>
+                    <p class="hint">モデルが参照する全ての変数をここに定義してください。モデルアップロード時に自動追加されます。上下限と中心値は手動で設定してください。</p>
                     <table class="var-table" id="var-table">
                         <thead>
                             <tr>
@@ -108,7 +111,9 @@
 
                 <!-- 目標値定義 -->
                 <div class="form-group">
-                    <label>目標値（特性名 = モデルのキー名）</label>
+                    <label>目的変数（目標値）</label>
+                    <p class="hint">各モデルに対応する特性名と目標値です。モデルアップロード時に自動追加されます。目標値は手動で設定してください。<br>
+                    特性名はモデル名と完全一致する必要があります（例: <code>ols_硬度.joblib</code> → 特性名「硬度」）。</p>
                     <table class="var-table" id="target-table">
                         <thead>
                             <tr>
@@ -159,6 +164,9 @@
                 </div>
             </div>
         </div>
+
+        <!-- バリデーションエラー表示 -->
+        <div id="custom-validation-errors" class="hidden"></div>
 
         <div class="actions">
             <button class="btn btn-primary" id="btn-to-step2" disabled>次へ: 設定</button>

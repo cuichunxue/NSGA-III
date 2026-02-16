@@ -223,9 +223,33 @@ class OptimizationRunner:
     # ---- custom (OLS) mode ------------------------------------------------
 
     def _run_custom(self) -> Dict[str, Any]:
-        variables = self.config["variables"]  # {name: (lo, hi, center)}
-        model_paths = self.config["model_paths"]  # {target: path}
-        targets = self.config["targets"]  # {target: value}
+        variables = self.config.get("variables")
+        model_paths = self.config.get("model_paths")
+        targets = self.config.get("targets")
+
+        if not variables:
+            raise RuntimeError("設計変数が定義されていません。")
+        if not model_paths:
+            raise RuntimeError("回帰モデルが指定されていません。")
+        if not targets:
+            raise RuntimeError("目標値が定義されていません。")
+
+        # モデルと目標値の整合性を検証
+        model_keys = set(model_paths.keys())
+        target_keys = set(targets.keys())
+        models_without_targets = model_keys - target_keys
+        if models_without_targets:
+            raise RuntimeError(
+                f"以下のモデルに対応する目標値が未定義です: "
+                f"{', '.join(sorted(models_without_targets))}"
+            )
+        targets_without_models = target_keys - model_keys
+        if targets_without_models:
+            raise RuntimeError(
+                f"以下の目標値に対応するモデルがありません: "
+                f"{', '.join(sorted(targets_without_models))}"
+            )
+
         pop_size = int(self.config.get("pop_size", 200))
         n_gen = int(self.config.get("n_gen", 300))
         seed = int(self.config.get("seed", 42))

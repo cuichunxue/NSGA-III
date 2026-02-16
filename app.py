@@ -98,6 +98,13 @@ def api_optimize():
     if not isinstance(config, dict):
         return jsonify({"error": "リクエストはJSON辞書である必要があります"}), 400
 
+    # カスタムモードの厳密バリデーション
+    mode = config.get("mode", "demo")
+    if mode == "custom":
+        err = _validate_custom_config(config)
+        if err:
+            return jsonify({"error": err}), 400
+
     n_gen = int(config.get("n_gen", 200))
 
     # 古いジョブを定期的に掃除
@@ -263,14 +270,117 @@ def api_upload_model():
         features = []
         if hasattr(model, "params") and hasattr(model.params, "index"):
             features = model.params.index.tolist()
+
+        # ファイル名から目的変数名（特性名）を自動抽出
+        target_name = _extract_target_name(f.filename)
+
+        # 特徴量名から設計変数名を自動抽出
+        variable_names = _extract_variable_names(features)
+
         return jsonify({
             "path": str(save_path),
             "filename": f.filename,
             "features": features,
+            "target_name": target_name,
+            "variable_names": variable_names,
         })
     except Exception:
         save_path.unlink(missing_ok=True)
         return jsonify({"error": "モデルの読み込みに失敗しました。有効な joblib ファイルか確認してください。"}), 400
+
+
+def _extract_target_name(filename: str) -> str:
+    """ファイル名から目的変数名を抽出する。例: ols_特性A.joblib → 特性A"""
+    name = filename
+    if name.startswith("ols_"):
+        name = name[4:]
+    if name.endswith(".joblib"):
+        name = name[:-7]
+    return name
+
+
+def _extract_variable_names(features: list) -> list:
+    """OLS モデルの特徴量名から設計変数名を抽出する。"""
+    var_names = set()
+    for feat in features:
+        if feat == "const":
+            continue
+        # 二乗項: "VAR^2 (centered)"
+        if "^2" in feat and "(centered)" in feat:
+            var_name = feat.split("^2")[0]
+            var_names.add(var_name)
+            continue
+        # 交互作用項: "VAR1:VAR2 (centered)"
+        if ":" in feat and "(centered)" in feat:
+            vars_part = feat.replace(" (centered)", "")
+            for part in vars_part.split(":"):
+                var_names.add(part)
+            continue
+        # 一次項（変数名そのもの）
+        var_names.add(feat)
+    return sorted(var_names)
+
+
+def _validate_custom_config(config: dict) -> str | None:
+    """カスタムモードの設定を厳密に検証する。不整合があればエラーメッセージを返す。"""
+    variables = config.get("variables")
+    model_paths = config.get("model_paths")
+    targets = config.get("targets")
+
+    if not variables or not isinstance(variables, dict):
+        return "設計変数が定義されていません。"
+    if not model_paths or not isinstance(model_paths, dict):
+        return "回帰モデルがアップロードされていません。"
+    if not targets or not isinstance(targets, dict):
+        return "目標値が定義されていません。"
+
+    model_keys = set(model_paths.keys())
+    target_keys = set(targets.keys())
+
+    # モデルの目的変数と目標値の整合性チェック
+    models_without_targets = model_keys - target_keys
+    if models_without_targets:
+        return (
+            f"以下のモデルに対応する目標値が未定義です: "
+            f"{', '.join(sorted(models_without_targets))}"
+        )
+
+    targets_without_models = target_keys - model_keys
+    if targets_without_models:
+        return (
+            f"以下の目標値に対応するモデルがありません: "
+            f"{', '.join(sorted(targets_without_models))}"
+        )
+
+    # 各モデルが参照する変数が設計変数に含まれているかチェック
+    import joblib
+
+    defined_vars = set(variables.keys())
+    for target_name, path in model_paths.items():
+        try:
+            model = joblib.load(path)
+            if hasattr(model, "params") and hasattr(model.params, "index"):
+                features = model.params.index.tolist()
+                required_vars = set(_extract_variable_names(features))
+                missing_vars = required_vars - defined_vars
+                if missing_vars:
+                    return (
+                        f"モデル「{target_name}」が変数 "
+                        f"{', '.join(sorted(missing_vars))} を参照していますが、"
+                        f"設計変数に定義されていません。"
+                    )
+        except Exception:
+            return f"モデル「{target_name}」の読み込みに失敗しました: {path}"
+
+    # 設計変数の値の検証
+    for var_name, bounds in variables.items():
+        if not isinstance(bounds, (list, tuple)) or len(bounds) != 3:
+            return f"設計変数「{var_name}」のフォーマットが不正です（[下限, 上限, 中心値] が必要）。"
+        lo, hi, center = bounds
+        if lo >= hi:
+            return f"設計変数「{var_name}」の下限 ({lo}) が上限 ({hi}) 以上です。"
+
+    return None
 
 
 # ---------------------------------------------------------------------------

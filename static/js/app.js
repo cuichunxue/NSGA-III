@@ -10,7 +10,7 @@
         mode: "demo",           // "demo" | "custom"
         selectedProblem: null,  // demo問題キー
         demoProblems: {},
-        uploadedModels: [],     // [{path, filename, features}]
+        uploadedModels: [],     // [{path, filename, features, target_name, variable_names}]
         jobId: null,
         pollTimer: null,
         resultData: null,
@@ -155,12 +155,14 @@
                     continue;
                 }
                 S.uploadedModels.push(data);
-                renderUploadedModels();
             } catch (err) {
                 alert("アップロードに失敗しました: " + err.message);
             }
         }
         e.target.value = "";
+        renderUploadedModels();
+        autoPopulateFromModels();
+        clearCustomErrors();
     }
 
     function escapeHtml(str) {
@@ -175,19 +177,216 @@
             .map(
                 (m, i) => `
             <div class="uploaded-item">
-                <span>${escapeHtml(m.filename)} (${m.features.length} 特徴量)</span>
+                <span>${escapeHtml(m.filename)}
+                    <small class="hint">[目的変数: ${escapeHtml(m.target_name || "不明")}] (${m.features.length} 特徴量, ${(m.variable_names || []).length} 設計変数)</small>
+                </span>
                 <button class="btn-icon" data-idx="${i}" title="削除">&times;</button>
             </div>
         `
             )
             .join("");
-        // イベントデリゲーション（inline onclick を回避）
         el.querySelectorAll(".btn-icon").forEach((btn) => {
             btn.addEventListener("click", () => {
                 S.uploadedModels.splice(parseInt(btn.dataset.idx), 1);
                 renderUploadedModels();
+                autoPopulateFromModels();
+                clearCustomErrors();
             });
         });
+    }
+
+    /**
+     * アップロード済みモデルから設計変数テーブルと目標値テーブルを自動補完する。
+     * 既存の手動入力を尊重しつつ、不足分を追加する。
+     */
+    function autoPopulateFromModels() {
+        if (S.uploadedModels.length === 0) return;
+
+        // 全モデルから設計変数名を収集
+        const allVarNames = new Set();
+        S.uploadedModels.forEach((m) => {
+            (m.variable_names || []).forEach((v) => allVarNames.add(v));
+        });
+
+        // 全モデルから目的変数名を収集
+        const allTargetNames = new Set();
+        S.uploadedModels.forEach((m) => {
+            if (m.target_name) allTargetNames.add(m.target_name);
+        });
+
+        // --- 設計変数テーブルの自動補完 ---
+        const existingVarNames = new Set();
+        $$("#var-table-body tr").forEach((row) => {
+            const name = row.querySelector(".var-name").value.trim();
+            if (name) existingVarNames.add(name);
+        });
+
+        // 既存行が空のデフォルト値のみなら全クリアして再構築
+        const existingRows = $$("#var-table-body tr");
+        const onlyDefaults = existingRows.length === 1
+            && existingRows[0].querySelector(".var-name").value.trim() === "x1"
+            && !allVarNames.has("x1");
+        if (onlyDefaults) {
+            $("#var-table-body").innerHTML = "";
+            existingVarNames.clear();
+        }
+
+        // 不足している変数を追加
+        allVarNames.forEach((varName) => {
+            if (!existingVarNames.has(varName)) {
+                const row = document.createElement("tr");
+                row.innerHTML = `
+                    <td><input type="text" class="var-name" value="${escapeHtml(varName)}" placeholder="変数名"></td>
+                    <td><input type="number" class="var-lo" value="0" step="any"></td>
+                    <td><input type="number" class="var-hi" value="1" step="any"></td>
+                    <td><input type="number" class="var-center" value="0.5" step="any"></td>
+                    <td><button class="btn-icon btn-remove-var" title="削除">&times;</button></td>
+                `;
+                $("#var-table-body").appendChild(row);
+            }
+        });
+
+        // --- 目標値テーブルの自動補完 ---
+        const existingTargetNames = new Set();
+        $$("#target-table-body tr").forEach((row) => {
+            const name = row.querySelector(".tgt-name").value.trim();
+            if (name) existingTargetNames.add(name);
+        });
+
+        // 既存行が空のデフォルトのみなら全クリアして再構築
+        const existingTargetRows = $$("#target-table-body tr");
+        const onlyDefaultTargets = existingTargetRows.length === 1
+            && existingTargetRows[0].querySelector(".tgt-name").value.trim() === "";
+        if (onlyDefaultTargets) {
+            $("#target-table-body").innerHTML = "";
+            existingTargetNames.clear();
+        }
+
+        // 不足している目標値を追加
+        allTargetNames.forEach((tgtName) => {
+            if (!existingTargetNames.has(tgtName)) {
+                const row = document.createElement("tr");
+                row.innerHTML = `
+                    <td><input type="text" class="tgt-name" value="${escapeHtml(tgtName)}" placeholder="特性名"></td>
+                    <td><input type="number" class="tgt-val" value="0" step="any"></td>
+                    <td><button class="btn-icon btn-remove-tgt" title="削除">&times;</button></td>
+                `;
+                $("#target-table-body").appendChild(row);
+            }
+        });
+
+        bindRemoveButtons();
+    }
+
+    /**
+     * カスタムモードのバリデーション。
+     * エラーがあればメッセージ配列を返し、問題なければ空配列を返す。
+     */
+    function validateCustomConfig() {
+        const errors = [];
+
+        // モデルが1つもアップロードされていない
+        if (S.uploadedModels.length === 0) {
+            errors.push("回帰モデルが1つもアップロードされていません。.joblib ファイルをアップロードしてください。");
+            return errors;
+        }
+
+        // モデルから目的変数名を収集
+        const modelTargetNames = new Set();
+        S.uploadedModels.forEach((m) => {
+            if (m.target_name) modelTargetNames.add(m.target_name);
+        });
+
+        // モデルから設計変数名を収集
+        const modelVarNames = new Set();
+        S.uploadedModels.forEach((m) => {
+            (m.variable_names || []).forEach((v) => modelVarNames.add(v));
+        });
+
+        // ユーザーが定義した設計変数を収集
+        const definedVars = {};
+        $$("#var-table-body tr").forEach((row) => {
+            const name = row.querySelector(".var-name").value.trim();
+            const lo = parseFloat(row.querySelector(".var-lo").value);
+            const hi = parseFloat(row.querySelector(".var-hi").value);
+            if (name) {
+                definedVars[name] = { lo, hi };
+            }
+        });
+
+        // ユーザーが定義した目標値を収集
+        const definedTargets = new Set();
+        $$("#target-table-body tr").forEach((row) => {
+            const name = row.querySelector(".tgt-name").value.trim();
+            if (name) definedTargets.add(name);
+        });
+
+        // チェック1: モデルの目的変数に対応する目標値が全て定義されているか
+        modelTargetNames.forEach((tgt) => {
+            if (!definedTargets.has(tgt)) {
+                errors.push(`モデル「${tgt}」に対応する目標値が未定義です。目標値テーブルに「${tgt}」を追加してください。`);
+            }
+        });
+
+        // チェック2: 定義された目標値に対応するモデルが全てあるか
+        definedTargets.forEach((tgt) => {
+            if (!modelTargetNames.has(tgt)) {
+                errors.push(`目標値「${tgt}」に対応するモデルがアップロードされていません。`);
+            }
+        });
+
+        // チェック3: モデルが参照する設計変数が全て定義されているか
+        modelVarNames.forEach((varName) => {
+            if (!(varName in definedVars)) {
+                errors.push(`モデルが変数「${varName}」を参照していますが、設計変数テーブルに定義されていません。`);
+            }
+        });
+
+        // チェック4: 設計変数の下限 < 上限
+        for (const [name, bounds] of Object.entries(definedVars)) {
+            if (isNaN(bounds.lo) || isNaN(bounds.hi)) {
+                errors.push(`設計変数「${name}」の上下限が数値ではありません。`);
+            } else if (bounds.lo >= bounds.hi) {
+                errors.push(`設計変数「${name}」の下限 (${bounds.lo}) が上限 (${bounds.hi}) 以上です。`);
+            }
+        }
+
+        // チェック5: 設計変数が0個
+        if (Object.keys(definedVars).length === 0) {
+            errors.push("設計変数が1つも定義されていません。");
+        }
+
+        // チェック6: 目標値が0個
+        if (definedTargets.size === 0) {
+            errors.push("目標値が1つも定義されていません。");
+        }
+
+        return errors;
+    }
+
+    function clearCustomErrors() {
+        const el = $("#custom-validation-errors");
+        if (el) {
+            el.classList.add("hidden");
+            el.innerHTML = "";
+        }
+    }
+
+    function showCustomErrors(errors) {
+        const el = $("#custom-validation-errors");
+        if (!el) return;
+        if (errors.length === 0) {
+            el.classList.add("hidden");
+            el.innerHTML = "";
+            return;
+        }
+        el.classList.remove("hidden");
+        el.innerHTML = `
+            <div class="error-box">
+                <strong>設定エラー（${errors.length}件）</strong>
+                <ul>${errors.map((e) => `<li>${escapeHtml(e)}</li>`).join("")}</ul>
+            </div>
+        `;
     }
 
     // ----- プリセット ------------------------------------------------
@@ -216,7 +415,18 @@
 
     // ----- ステップナビゲーション ----------------------------------------
     function bindNavigation() {
-        $("#btn-to-step2").addEventListener("click", () => goToStep(2));
+        $("#btn-to-step2").addEventListener("click", () => {
+            // カスタムモードの場合はバリデーション実行
+            if (S.mode === "custom") {
+                const errors = validateCustomConfig();
+                if (errors.length > 0) {
+                    showCustomErrors(errors);
+                    return;
+                }
+                clearCustomErrors();
+            }
+            goToStep(2);
+        });
         $("#btn-to-step3").addEventListener("click", () => goToStep(3));
         $("#btn-back-step1").addEventListener("click", () => goToStep(1));
         $("#btn-back-step2").addEventListener("click", () => goToStep(2));
@@ -345,8 +555,8 @@
 
         const modelPaths = {};
         S.uploadedModels.forEach((m) => {
-            // filenameから特性名を推定（例: ols_特性A.joblib → 特性A）
-            let key = m.filename.replace(/^ols_/, "").replace(/\.joblib$/, "");
+            // サーバーが解析した target_name を使用（整合性保証）
+            const key = m.target_name || m.filename.replace(/^ols_/, "").replace(/\.joblib$/, "");
             modelPaths[key] = m.path;
         });
 
