@@ -298,6 +298,7 @@
             if (data.error) throw new Error(data.error);
 
             S.jobId = data.job_id;
+            S.config = config;
             btn.textContent = "実行中...";
             $("#progress-area").classList.remove("hidden");
             $("#progress-gen-total").textContent = config.n_gen;
@@ -667,7 +668,7 @@
     }
 
     async function runPredict() {
-        if (!S.jobId || !S.resultData) return;
+        if (!S.resultData) return;
 
         const values = {};
         const inputs = document.querySelectorAll("#predict-var-inputs input[data-var]");
@@ -684,8 +685,13 @@
             const res = await fetch("/api/predict", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ job_id: S.jobId, values }),
+                body: JSON.stringify({ job_id: S.jobId, config: S.config, values }),
             });
+            if (!res.ok) {
+                let msg = `サーバーエラー (${res.status})`;
+                try { const d = await res.json(); if (d.error) msg = d.error; } catch (_) {}
+                throw new Error(msg);
+            }
             const data = await res.json();
             if (data.error) throw new Error(data.error);
             renderPredictOutput(data);

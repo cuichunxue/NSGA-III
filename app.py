@@ -216,15 +216,18 @@ def api_predict():
     except Exception:
         return jsonify({"error": "無効なJSONです"}), 400
 
-    job_id = body.get("job_id")
     values = body.get("values", {})
 
-    job = _get_job_snapshot(job_id)
-    if job is None:
-        return jsonify({"error": "ジョブが見つかりません"}), 404
-    config = job.get("config")
+    # config はリクエストから直接取得（フロントエンドが保持）
+    # フォールバックとしてジョブストアからも取得
+    config = body.get("config")
     if config is None:
-        return jsonify({"error": "ジョブ設定が見つかりません"}), 400
+        job_id = body.get("job_id")
+        job = _get_job_snapshot(job_id) if job_id else None
+        if job is not None:
+            config = job.get("config")
+    if config is None:
+        return jsonify({"error": "設定が見つかりません。ページを再読み込みして最適化を再実行してください。"}), 400
 
     try:
         result = predict_single(config, values)
