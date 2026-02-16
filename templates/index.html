@@ -261,6 +261,7 @@
             <button class="tab active" data-tab="chart">パレートフロント</button>
             <button class="tab" data-tab="parallel">パラレルプロット</button>
             <button class="tab" data-tab="table">解一覧テーブル</button>
+            <button class="tab" data-tab="predict">予測シミュレータ</button>
         </div>
 
         <!-- パレートフロントチャート -->
@@ -284,6 +285,26 @@
                     <thead><tr id="result-table-head"></tr></thead>
                     <tbody id="result-table-body"></tbody>
                 </table>
+            </div>
+        </div>
+
+        <!-- 予測シミュレータ -->
+        <div class="tab-content" id="tab-predict">
+            <p class="hint">テーブルの行をクリックすると変数値が自動入力されます。値を調整して「予測」ボタンで結果を確認できます。</p>
+            <div class="predict-grid">
+                <div class="predict-inputs">
+                    <h3>設計変数</h3>
+                    <div id="predict-var-inputs">
+                        <!-- JS で生成 -->
+                    </div>
+                    <button class="btn btn-primary" id="btn-predict">予測</button>
+                </div>
+                <div class="predict-results">
+                    <h3>予測結果</h3>
+                    <div id="predict-output">
+                        <p class="hint">変数値を入力して「予測」ボタンを押してください。</p>
+                    </div>
+                </div>
             </div>
         </div>
 

@@ -23,7 +23,7 @@ from flask import (
     send_file,
 )
 
-from optimizer.runner import DEMO_PROBLEMS, OptimizationRunner
+from optimizer.runner import DEMO_PROBLEMS, OptimizationRunner, predict_single
 
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 50 * 1024 * 1024  # 50 MB
@@ -114,6 +114,7 @@ def api_optimize():
             "best_value": None,
             "result": None,
             "error": None,
+            "config": config,
             "started_at": time.time(),
         }
 
@@ -203,6 +204,33 @@ def api_download(job_id: str):
         as_attachment=True,
         download_name="pareto_solutions.csv",
     )
+
+
+# ---- 予測シミュレータ ---------------------------------------------------------
+
+@app.route("/api/predict", methods=["POST"])
+def api_predict():
+    """単一の変数値セットに対して予測する。"""
+    try:
+        body = request.get_json(force=True)
+    except Exception:
+        return jsonify({"error": "無効なJSONです"}), 400
+
+    job_id = body.get("job_id")
+    values = body.get("values", {})
+
+    job = _get_job_snapshot(job_id)
+    if job is None:
+        return jsonify({"error": "ジョブが見つかりません"}), 404
+    config = job.get("config")
+    if config is None:
+        return jsonify({"error": "ジョブ設定が見つかりません"}), 400
+
+    try:
+        result = predict_single(config, values)
+        return jsonify(result)
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 400
 
 
 # ---- モデルアップロード（カスタムモード用） ----------------------------------

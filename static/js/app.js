@@ -425,6 +425,7 @@
         renderParetoChart(d);
         renderParallelChart(d);
         renderTable(d);
+        renderPredictInputs(d);
     }
 
     function renderSummary(d) {
@@ -589,10 +590,21 @@
         const body = $("#result-table-body");
         body.innerHTML = rows
             .map(
-                (row) =>
-                    "<tr>" + cols.map((c) => `<td>${row[c]}</td>`).join("") + "</tr>"
+                (row, idx) =>
+                    `<tr data-row-idx="${idx}">` + cols.map((c) => `<td>${row[c]}</td>`).join("") + "</tr>"
             )
             .join("");
+
+        // 行クリックで予測シミュレータへ
+        body.querySelectorAll("tr").forEach((tr) => {
+            tr.addEventListener("click", () => {
+                const idx = parseInt(tr.dataset.rowIdx);
+                const row = rows[idx];
+                if (row) populatePredictFromRow(row);
+                body.querySelectorAll("tr").forEach((r) => r.classList.remove("selected-row"));
+                tr.classList.add("selected-row");
+            });
+        });
 
         $("#table-count").textContent = `${rows.length} 解`;
     }
@@ -600,7 +612,7 @@
     function filterTable() {
         if (!S.resultData) return;
         const table = S.resultData.table;
-        const cols = Object.keys(table[0]);
+        const cols = S.resultData.column_order || Object.keys(table[0]);
         renderTableBody(table, cols);
     }
 
@@ -608,6 +620,113 @@
     function downloadCSV() {
         if (!S.jobId) return;
         window.location.href = `/api/download/${S.jobId}`;
+    }
+
+    // ----- 予測シミュレータ -----------------------------------------------
+    function renderPredictInputs(d) {
+        const container = $("#predict-var-inputs");
+        container.innerHTML = "";
+        const varNames = d.var_names;
+        // 最初の解の値をデフォルトとして使用
+        const firstRow = d.table[0] || {};
+        for (const name of varNames) {
+            const val = firstRow[name] != null ? firstRow[name] : 0;
+            const row = document.createElement("div");
+            row.className = "predict-var-row";
+            row.innerHTML = `
+                <label title="${escapeHtml(name)}">${escapeHtml(name)}</label>
+                <input type="number" step="any" data-var="${escapeHtml(name)}" value="${val}">
+            `;
+            container.appendChild(row);
+        }
+
+        // 予測ボタン
+        $("#btn-predict").addEventListener("click", runPredict);
+    }
+
+    function populatePredictFromRow(row) {
+        if (!S.resultData) return;
+        const varNames = S.resultData.var_names;
+        for (const name of varNames) {
+            const input = document.querySelector(`#predict-var-inputs input[data-var="${name}"]`);
+            if (input && row[name] != null) {
+                input.value = row[name];
+            }
+        }
+        // タブを予測シミュレータに切り替え
+        $$(".tab").forEach((t) => t.classList.remove("active"));
+        $$(".tab-content").forEach((c) => c.classList.remove("active"));
+        document.querySelector('.tab[data-tab="predict"]').classList.add("active");
+        $("#tab-predict").classList.add("active");
+    }
+
+    async function runPredict() {
+        if (!S.jobId || !S.resultData) return;
+
+        const values = {};
+        const varNames = S.resultData.var_names;
+        for (const name of varNames) {
+            const input = document.querySelector(`#predict-var-inputs input[data-var="${name}"]`);
+            if (input) values[name] = parseFloat(input.value) || 0;
+        }
+
+        const btn = $("#btn-predict");
+        btn.disabled = true;
+        btn.textContent = "計算中...";
+
+        try {
+            const res = await fetch("/api/predict", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ job_id: S.jobId, values }),
+            });
+            const data = await res.json();
+            if (data.error) throw new Error(data.error);
+            renderPredictOutput(data);
+        } catch (e) {
+            $("#predict-output").innerHTML = `<div class="error-box"><strong>エラー</strong><p>${escapeHtml(e.message)}</p></div>`;
+        } finally {
+            btn.disabled = false;
+            btn.textContent = "予測";
+        }
+    }
+
+    function renderPredictOutput(data) {
+        const out = $("#predict-output");
+        let html = "";
+
+        // 目的関数値（デモモード）
+        if (data.objectives) {
+            html += '<div class="predict-result-card"><div class="pr-name">目的関数値</div>';
+            for (const [name, val] of Object.entries(data.objectives)) {
+                html += `<div class="pr-row"><span class="pr-label">${escapeHtml(name)}</span><span class="pr-val">${val}</span></div>`;
+            }
+            html += "</div>";
+        }
+
+        // 予測値（カスタムモード）
+        if (data.predictions) {
+            for (const [name, info] of Object.entries(data.predictions)) {
+                const devPct = info.target !== 0 ? Math.abs(info.abs_deviation / info.target * 100) : null;
+                let colorClass = "pr-good";
+                if (devPct !== null) {
+                    if (devPct > 10) colorClass = "pr-bad";
+                    else if (devPct > 3) colorClass = "pr-warn";
+                }
+                html += `<div class="predict-result-card">`;
+                html += `<div class="pr-name">${escapeHtml(name)}</div>`;
+                html += `<div class="pr-row"><span class="pr-label">目標値</span><span class="pr-val">${info.target}</span></div>`;
+                html += `<div class="pr-row"><span class="pr-label">予測値</span><span class="pr-val ${colorClass}">${info.predicted}</span></div>`;
+                html += `<div class="pr-row"><span class="pr-label">絶対偏差</span><span class="pr-val">${info.abs_deviation}</span></div>`;
+                html += `<div class="pr-row"><span class="pr-label">偏差指標</span><span class="pr-val">${info.deviation}</span></div>`;
+                if (devPct !== null) {
+                    html += `<div class="pr-row"><span class="pr-label">相対誤差</span><span class="pr-val ${colorClass}">${devPct.toFixed(2)}%</span></div>`;
+                }
+                html += `</div>`;
+            }
+        }
+
+        out.innerHTML = html || '<p class="hint">予測結果がありません。</p>';
     }
 
     // ----- エラー表示 ---------------------------------------------------

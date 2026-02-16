@@ -73,6 +73,62 @@ def _get_demo_problem(name: str):
     return get_problem(name)
 
 
+def predict_single(config: Dict[str, Any], values: Dict[str, float]) -> Dict[str, Any]:
+    """単一の変数値セットに対して予測・目的関数値を計算する。"""
+    mode = config.get("mode", "demo")
+
+    if mode == "demo":
+        problem_key = config.get("problem", "zdt1")
+        if problem_key not in DEMO_PROBLEMS:
+            raise ValueError(f"不明なデモ問題: {problem_key}")
+        info = DEMO_PROBLEMS[problem_key]
+        problem = _get_demo_problem(problem_key)
+
+        var_names = [f"x{i+1}" for i in range(info["n_var"])]
+        X = np.array([[values.get(v, 0.0) for v in var_names]])
+        F = problem.evaluate(X)
+
+        obj_names = info["obj_names"]
+        result = {"variables": {}, "objectives": {}}
+        for i, name in enumerate(var_names):
+            result["variables"][name] = round(float(X[0, i]), 6)
+        for i, name in enumerate(obj_names):
+            result["objectives"][name] = round(float(F[0, i]), 6)
+        return result
+
+    # custom mode
+    variables = config["variables"]
+    model_paths = config["model_paths"]
+    targets = config["targets"]
+    dev_mode = config.get("deviation_mode", "absolute")
+
+    variable_names = list(variables.keys())
+    center_values = {k: v[2] for k, v in variables.items()}
+
+    predictor = OLSModelPredictor(model_paths, variable_names, center_values)
+    X = np.array([[values.get(v, 0.0) for v in variable_names]])
+    Y, target_names = predictor.predict(X)
+
+    result = {"variables": {}, "predictions": {}, "deviations": {}, "objectives": {}}
+    for i, name in enumerate(variable_names):
+        result["variables"][name] = round(float(X[0, i]), 6)
+    for i, name in enumerate(target_names):
+        pred_val = float(Y[0, i])
+        target_val = targets.get(name, 0.0)
+        abs_dev = abs(pred_val - target_val)
+        if dev_mode == "normalized" and abs(target_val) > 1e-12:
+            dev = abs_dev / abs(target_val)
+        else:
+            dev = abs_dev
+        result["predictions"][name] = {
+            "predicted": round(pred_val, 6),
+            "target": target_val,
+            "abs_deviation": round(abs_dev, 6),
+            "deviation": round(dev, 6),
+        }
+    return result
+
+
 # ---------------------------------------------------------------------------
 # 進捗コールバック
 # ---------------------------------------------------------------------------
