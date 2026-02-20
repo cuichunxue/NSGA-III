@@ -19,6 +19,8 @@ from .core import (
     MultiObjectiveProblem,
     OLSModelPredictor,
     ObjectiveCalculator,
+    RankingObjectiveCalculator,
+    RankingProblem,
 )
 
 # ---------------------------------------------------------------------------
@@ -94,6 +96,78 @@ def predict_single(config: Dict[str, Any], values: Dict[str, float]) -> Dict[str
             result["variables"][name] = round(float(X[0, i]), 6)
         for i, name in enumerate(obj_names):
             result["objectives"][name] = round(float(F[0, i]), 6)
+        return result
+
+    if mode == "ranking":
+        variables = config["variables"]
+        model_paths = config["model_paths"]
+        groups = config.get("groups", [])
+        real_rankings = config.get("real_rankings", [])
+
+        variable_names = list(variables.keys())
+        center_values = {k: v[2] for k, v in variables.items()}
+
+        predictor = OLSModelPredictor(model_paths, variable_names, center_values)
+        X = np.array([[values.get(v, 0.0) for v in variable_names]])
+        Y, target_names = predictor.predict(X)
+
+        result: Dict[str, Any] = {
+            "variables": {},
+            "predictions": {},
+            "ranking_results": [],
+            "total_kendall": 0,
+        }
+        for i, name in enumerate(variable_names):
+            result["variables"][name] = round(float(X[0, i]), 6)
+        for i, name in enumerate(target_names):
+            result["predictions"][name] = {"predicted": round(float(Y[0, i]), 6)}
+
+        total_kendall = 0
+        for g, (group_members, real_ranks) in enumerate(zip(groups, real_rankings)):
+            ng = len(group_members)
+            y_g = np.array([
+                float(Y[0, target_names.index(name)])
+                for name in group_members
+                if name in target_names
+            ])
+
+            pred_ordering = list(np.argsort(-y_g, kind="stable"))
+            real_ordering = sorted(range(ng), key=lambda k: real_ranks[k])
+
+            # 予測ランキング（1-indexed、メンバーごと）
+            pred_ranks = [0] * ng
+            for rank_pos, member_idx in enumerate(pred_ordering):
+                pred_ranks[member_idx] = rank_pos + 1
+
+            d = RankingObjectiveCalculator.kendall_distance(pred_ordering, real_ordering)
+            total_kendall += d
+
+            # 逆転ペアを列挙
+            discordant_pairs = []
+            for i in range(ng):
+                for j in range(i + 1, ng):
+                    if real_ranks[i] < real_ranks[j]:
+                        better, worse = i, j
+                    else:
+                        better, worse = j, i
+                    # discordant: better の予測値 <= worse の予測値
+                    if y_g[better] < y_g[worse] or (
+                        y_g[better] == y_g[worse] and better > worse
+                    ):
+                        discordant_pairs.append(
+                            [group_members[better], group_members[worse]]
+                        )
+
+            result["ranking_results"].append({
+                "group_index": g,
+                "members": group_members,
+                "real_ranking": real_ranks,
+                "pred_ranking": pred_ranks,
+                "kendall_distance": d,
+                "discordant_pairs": discordant_pairs,
+            })
+
+        result["total_kendall"] = total_kendall
         return result
 
     # custom mode
@@ -185,6 +259,8 @@ class OptimizationRunner:
             return self._run_demo()
         elif mode == "custom":
             return self._run_custom()
+        elif mode == "ranking":
+            return self._run_ranking()
         else:
             raise ValueError(f"不明なモード: {mode}")
 
@@ -312,6 +388,172 @@ class OptimizationRunner:
             predictions=pareto_Y, target_names=target_names, targets=targets,
             directions=directions,
         )
+
+    # ---- ranking (single-objective GA) mode ------------------------------
+
+    def _run_ranking(self) -> Dict[str, Any]:
+        """ランキング最適化を実行する（単一目的 GA）。"""
+        from pymoo.algorithms.soo.nonconvex.ga import GA
+
+        config = self.config
+        variables = config.get("variables")
+        model_paths = config.get("model_paths")
+        groups = config.get("groups")
+        real_rankings = config.get("real_rankings")
+
+        if not variables:
+            raise RuntimeError("設計変数が定義されていません。")
+        if not model_paths:
+            raise RuntimeError("回帰モデルが指定されていません。")
+        if not groups:
+            raise RuntimeError("グループが定義されていません。")
+        if not real_rankings:
+            raise RuntimeError("実機ランキングが定義されていません。")
+
+        pop_size = int(config.get("pop_size", 300))
+        n_gen = int(config.get("n_gen", 500))
+        seed = int(config.get("seed", 42))
+        group_weights = config.get("group_weights") or [1.0] * len(groups)
+        margin_lambda = float(config.get("margin_lambda", 0.01))
+        margin_delta = float(config.get("margin_delta", 0.01))
+
+        variable_names = list(variables.keys())
+        xl = np.array([v[0] for v in variables.values()])
+        xu = np.array([v[1] for v in variables.values()])
+        center_values = {k: v[2] for k, v in variables.items()}
+
+        predictor = OLSModelPredictor(model_paths, variable_names, center_values)
+        if not predictor.target_names:
+            raise RuntimeError("有効なモデルがロードされませんでした。ファイルパスを確認してください。")
+
+        obj_calculator = RankingObjectiveCalculator(
+            predictor, groups, real_rankings, group_weights,
+            margin_lambda, margin_delta,
+        )
+        problem = RankingProblem(obj_calculator, xl, xu)
+
+        # 収束履歴を記録する
+        convergence_history: List[float] = []
+
+        def on_progress_with_history(gen, total, best_val):
+            if best_val is not None:
+                convergence_history.append(round(float(best_val), 6))
+            self.progress_callback(gen, total, best_val)
+
+        algorithm = GA(pop_size=pop_size)
+        termination = get_termination("n_gen", n_gen)
+        callback = _ProgressCallback(n_gen, on_progress_with_history)
+
+        result = minimize(
+            problem,
+            algorithm,
+            termination,
+            seed=seed,
+            verbose=False,
+            save_history=False,
+            callback=callback,
+        )
+
+        # 最終世代の全個体から J 値昇順で上位 20 個を抽出
+        final_X = result.pop.get("X")
+        final_F = result.pop.get("F")
+        sort_idx = np.argsort(final_F[:, 0])[:20]
+        top_X = final_X[sort_idx]
+        top_F = final_F[sort_idx]
+
+        return self._build_ranking_result(
+            top_X, top_F, variable_names,
+            obj_calculator, groups, real_rankings, convergence_history,
+        )
+
+    def _build_ranking_result(
+        self,
+        top_X: np.ndarray,
+        top_F: np.ndarray,
+        variable_names: List[str],
+        obj_calculator: "RankingObjectiveCalculator",
+        groups: List[List[str]],
+        real_rankings: List[List[int]],
+        convergence_history: List[float],
+    ) -> Dict[str, Any]:
+        """ランキング最適化の結果を JSON シリアライズ可能な辞書に整形する。"""
+        n_top = len(top_X)
+
+        # 最良解（最小 J の解）のグループ詳細を計算
+        _, _, group_details = obj_calculator.compute_objective(top_X[:1])
+
+        # グループ結果を構築
+        group_results = []
+        for g, detail in enumerate(group_details):
+            ng = len(groups[g])
+            max_kendall = ng * (ng - 1) // 2
+            d_g = detail["kendall_distance"]
+
+            # pred_ranking（1-indexed、メンバーごと）
+            pred_ordering = detail["pred_ordering"]
+            pred_ranks = [0] * ng
+            for rank_pos, member_idx in enumerate(pred_ordering):
+                pred_ranks[member_idx] = rank_pos + 1
+
+            if d_g == 0:
+                status = "perfect"
+            elif max_kendall > 0 and d_g >= max_kendall / 2:
+                status = "mismatch"
+            else:
+                status = "partial"
+
+            group_results.append({
+                "group_index": g,
+                "members": groups[g],
+                "real_ranking": real_rankings[g],
+                "pred_ranking": pred_ranks,
+                "kendall_distance": d_g,
+                "max_kendall_distance": max_kendall,
+                "predicted_values": detail["predicted_values"],
+                "status": status,
+            })
+
+        total_kendall = sum(gr["kendall_distance"] for gr in group_results)
+        max_kendall_total = sum(gr["max_kendall_distance"] for gr in group_results)
+
+        # 上位解ごとのグループ Kendall 距離を一括計算
+        D_all = obj_calculator.compute_group_distances(top_X)  # (n_top, n_groups)
+
+        table_rows = []
+        for row_idx in range(n_top):
+            row: Dict[str, Any] = {}
+            for i, name in enumerate(variable_names):
+                row[name] = round(float(top_X[row_idx, i]), 6)
+            row["J_rank"] = round(float(top_F[row_idx, 0]), 6)
+            for g in range(len(groups)):
+                row[f"d_G{g + 1}"] = int(D_all[row_idx, g])
+            table_rows.append(row)
+
+        column_order = list(variable_names) + ["J_rank"]
+        column_order += [f"d_G{g + 1}" for g in range(len(groups))]
+
+        perfect = sum(1 for gr in group_results if gr["status"] == "perfect")
+        partial = sum(1 for gr in group_results if gr["status"] == "partial")
+        mismatch = sum(1 for gr in group_results if gr["status"] == "mismatch")
+
+        return {
+            "mode": "ranking",
+            "n_solutions": n_top,
+            "var_names": variable_names,
+            "best_J": round(float(top_F[0, 0]), 6),
+            "total_kendall": total_kendall,
+            "max_kendall": max_kendall_total,
+            "group_results": group_results,
+            "table": table_rows,
+            "column_order": column_order,
+            "convergence_history": convergence_history,
+            "summary": {
+                "n_solutions": n_top,
+                "perfect_groups": perfect,
+                "partial_groups": partial,
+                "mismatch_groups": mismatch,
+            },
+        }
 
     # ---- helpers ----------------------------------------------------------
 

@@ -7,10 +7,15 @@
 
     // ----- state -------------------------------------------------------
     const S = {
-        mode: "demo",           // "demo" | "custom"
+        mode: "demo",           // "demo" | "custom" | "ranking"
         selectedProblem: null,  // demo問題キー
         demoProblems: {},
         uploadedModels: [],     // [{path, filename, features, target_name, variable_names}]
+        // ランキングモード専用
+        rankingUploadedModels: [],  // [{path, filename, features, target_name, variable_names}]
+        rankingGroups: [],          // [{members: [...], rankings: [...], weight: 1.0}]
+        rankingLambda: 0.01,
+        rankingDelta: 0.01,
         jobId: null,
         pollTimer: null,
         resultData: null,
@@ -31,6 +36,7 @@
         bindNavigation();
         bindModeToggle();
         bindCustomForm();
+        bindRankingForm();
         bindPresets();
         bindTabs();
         bindRunControls();
@@ -84,13 +90,15 @@
 
     function toggleMode() {
         const isDemo = S.mode === "demo";
+        const isCustom = S.mode === "custom";
+        const isRanking = S.mode === "ranking";
         $("#demo-section").classList.toggle("hidden", !isDemo);
-        $("#custom-section").classList.toggle("hidden", isDemo);
-        // カスタムモードでは常に次へ有効
-        if (!isDemo) {
-            $("#btn-to-step2").disabled = false;
-        } else {
+        $("#custom-section").classList.toggle("hidden", !isCustom);
+        $("#ranking-section").classList.toggle("hidden", !isRanking);
+        if (isDemo) {
             $("#btn-to-step2").disabled = !S.selectedProblem;
+        } else {
+            $("#btn-to-step2").disabled = false;
         }
     }
 
@@ -430,6 +438,24 @@
         `;
     }
 
+    function applyStep2Defaults() {
+        if (S.mode === "ranking") {
+            $("#pop-size").value = 300;
+            $("#n-gen").value = 500;
+            $$(".btn-preset").forEach((b) => b.classList.remove("active"));
+            // バランスプリセット相当を active に
+            $$(".btn-preset").forEach((b) => {
+                if (b.dataset.pop === "300" && b.dataset.gen === "500") b.classList.add("active");
+            });
+        } else if (S.mode === "demo") {
+            $("#pop-size").value = 100;
+            $("#n-gen").value = 200;
+        } else {
+            $("#pop-size").value = 200;
+            $("#n-gen").value = 300;
+        }
+    }
+
     // ----- プリセット ------------------------------------------------
     function bindPresets() {
         $$(".btn-preset").forEach((btn) => {
@@ -457,7 +483,6 @@
     // ----- ステップナビゲーション ----------------------------------------
     function bindNavigation() {
         $("#btn-to-step2").addEventListener("click", () => {
-            // カスタムモードの場合はバリデーション実行
             if (S.mode === "custom") {
                 const errors = validateCustomConfig();
                 if (errors.length > 0) {
@@ -465,7 +490,16 @@
                     return;
                 }
                 clearCustomErrors();
+            } else if (S.mode === "ranking") {
+                const errors = validateRankingConfig();
+                if (errors.length > 0) {
+                    showCustomErrors(errors);
+                    return;
+                }
+                clearCustomErrors();
             }
+            // Step2 のデフォルト値をモードに応じて調整
+            applyStep2Defaults();
             goToStep(2);
         });
         $("#btn-to-step3").addEventListener("click", () => goToStep(3));
@@ -505,6 +539,11 @@
         if (S.mode === "demo") {
             const info = S.demoProblems[S.selectedProblem];
             problemDesc = `<strong>問題:</strong> ${info.name} (${info.n_obj}目的, ${info.n_var}変数)`;
+        } else if (S.mode === "ranking") {
+            const nVar = $$("#ranking-var-table-body tr").length;
+            const nModel = S.rankingUploadedModels.length;
+            const nGroup = S.rankingGroups.length;
+            problemDesc = `<strong>問題:</strong> ランキング最適化 (因子 ${nVar}個, モデル ${nModel}個, グループ ${nGroup}個)`;
         } else {
             const nVar = $$("#var-table-body tr").length;
             const nModel = S.uploadedModels.length;
@@ -571,6 +610,42 @@
             return {
                 mode: "demo",
                 problem: S.selectedProblem,
+                pop_size: pop,
+                n_gen: gen,
+                seed: seed,
+            };
+        }
+
+        if (S.mode === "ranking") {
+            // ランキングモード: 設計変数を ranking-var-table-body から収集
+            const variables = {};
+            $$("#ranking-var-table-body tr").forEach((row) => {
+                const name = row.querySelector(".var-name").value.trim();
+                const lo = parseFloat(row.querySelector(".var-lo").value);
+                const hi = parseFloat(row.querySelector(".var-hi").value);
+                const center = parseFloat(row.querySelector(".var-center").value);
+                if (name) variables[name] = [lo, hi, center];
+            });
+
+            const modelPaths = {};
+            S.rankingUploadedModels.forEach((m) => {
+                const key = m.target_name || m.filename.replace(/^ols_/, "").replace(/\.joblib$/, "");
+                modelPaths[key] = m.path;
+            });
+
+            const groups = S.rankingGroups.map((g) => g.members);
+            const realRankings = S.rankingGroups.map((g) => g.rankings);
+            const groupWeights = S.rankingGroups.map((g) => g.weight);
+
+            return {
+                mode: "ranking",
+                variables,
+                model_paths: modelPaths,
+                groups,
+                real_rankings: realRankings,
+                group_weights: groupWeights,
+                margin_lambda: parseFloat($("#ranking-lambda").value) || 0.01,
+                margin_delta: parseFloat($("#ranking-delta").value) || 0.01,
                 pop_size: pop,
                 n_gen: gen,
                 seed: seed,
@@ -681,11 +756,42 @@
     // ----- 結果レンダリング ----------------------------------------------
     function renderResults() {
         const d = S.resultData;
-        try { renderSummary(d); } catch (e) { console.error("renderSummary:", e); }
-        try { renderParetoChart(d); } catch (e) { console.error("renderParetoChart:", e); }
-        try { renderParallelChart(d); } catch (e) { console.error("renderParallelChart:", e); }
-        try { renderTable(d); } catch (e) { console.error("renderTable:", e); }
-        try { renderPredictInputs(d); } catch (e) { console.error("renderPredictInputs:", e); }
+
+        if (d.mode === "ranking") {
+            // ランキングモード専用タブを表示・通常タブを非表示
+            $("#tab-btn-chart").classList.add("hidden");
+            $("#tab-btn-parallel").classList.add("hidden");
+            $("#tab-btn-ranking").classList.remove("hidden");
+            $("#tab-btn-convergence").classList.remove("hidden");
+            // デフォルトタブを「ランキング比較」にリセット
+            $$(".tab").forEach((t) => t.classList.remove("active"));
+            $$(".tab-content").forEach((c) => c.classList.remove("active"));
+            $("#tab-btn-ranking").classList.add("active");
+            $("#tab-ranking").classList.add("active");
+
+            try { renderRankingSummary(d); } catch (e) { console.error("renderRankingSummary:", e); }
+            try { renderRankingComparison(d); } catch (e) { console.error("renderRankingComparison:", e); }
+            try { renderConvergenceChart(d); } catch (e) { console.error("renderConvergenceChart:", e); }
+            try { renderTable(d); } catch (e) { console.error("renderTable:", e); }
+            try { renderPredictInputs(d); } catch (e) { console.error("renderPredictInputs:", e); }
+        } else {
+            // 通常モード：ランキング専用タブを隠す
+            $("#tab-btn-chart").classList.remove("hidden");
+            $("#tab-btn-parallel").classList.remove("hidden");
+            $("#tab-btn-ranking").classList.add("hidden");
+            $("#tab-btn-convergence").classList.add("hidden");
+            // デフォルトタブを「パレートフロント」にリセット
+            $$(".tab").forEach((t) => t.classList.remove("active"));
+            $$(".tab-content").forEach((c) => c.classList.remove("active"));
+            $("#tab-btn-chart").classList.add("active");
+            $("#tab-chart").classList.add("active");
+
+            try { renderSummary(d); } catch (e) { console.error("renderSummary:", e); }
+            try { renderParetoChart(d); } catch (e) { console.error("renderParetoChart:", e); }
+            try { renderParallelChart(d); } catch (e) { console.error("renderParallelChart:", e); }
+            try { renderTable(d); } catch (e) { console.error("renderTable:", e); }
+            try { renderPredictInputs(d); } catch (e) { console.error("renderPredictInputs:", e); }
+        }
     }
 
     function renderSummary(d) {
@@ -967,8 +1073,43 @@
         const ref = S.predictRefRow || {};
         let html = "";
 
+        // ランキングモード: 予測値 + ランキング比較
+        if (data.ranking_results && data.ranking_results.length > 0) {
+            // 予測値テーブル
+            if (data.predictions && Object.keys(data.predictions).length > 0) {
+                html += '<table class="predict-table"><thead><tr>';
+                html += '<th>特性</th><th>予測値</th>';
+                html += '</tr></thead><tbody>';
+                for (const [name, info] of Object.entries(data.predictions)) {
+                    html += `<tr><td class="pr-label">${escapeHtml(name)}</td><td>${info.predicted}</td></tr>`;
+                }
+                html += '</tbody></table>';
+            }
+            // ランキング比較
+            html += `<p style="margin:.8rem 0 .3rem;font-weight:600">ランキング比較（合計 Kendall 距離: ${data.total_kendall}）</p>`;
+            for (const gr of data.ranking_results) {
+                const statusCls = gr.kendall_distance === 0 ? "rank-perfect"
+                    : gr.kendall_distance > 0 ? "rank-partial" : "";
+                html += `<div class="rank-detail-mini ${statusCls}">`;
+                html += `<strong>グループ ${gr.group_index + 1}</strong> &nbsp; Kendall: ${gr.kendall_distance}`;
+                if (gr.discordant_pairs.length > 0) {
+                    const pairs = gr.discordant_pairs.map((p) => `${escapeHtml(p[0])} &gt; ${escapeHtml(p[1])}`).join(", ");
+                    html += `<br><small>逆転ペア: ${pairs}</small>`;
+                }
+                // メンバーの予測ランク vs 実機ランク
+                html += '<div style="display:flex;flex-wrap:wrap;gap:.3rem;margin-top:.3rem">';
+                gr.members.forEach((m, i) => {
+                    const realR = gr.real_ranking[i];
+                    const predR = gr.pred_ranking[i];
+                    const match = realR === predR;
+                    html += `<span class="group-member" title="${escapeHtml(m)}" style="background:${match ? '#e8f5e9' : '#fce4ec'}">${escapeHtml(m)}: 実${realR}/予${predR}</span>`;
+                });
+                html += '</div></div>';
+            }
+        }
+
         // カスタムモード: 回帰予測値 vs 目標値
-        if (data.predictions && Object.keys(data.predictions).length > 0) {
+        if (data.predictions && Object.keys(data.predictions).length > 0 && !data.ranking_results) {
             html += '<table class="predict-table"><thead><tr>';
             html += '<th>特性</th><th>方向</th><th>回帰予測値</th><th>目標値</th><th>偏差</th><th>相対誤差</th>';
             html += '</tr></thead><tbody>';
@@ -1032,4 +1173,452 @@
         $("#error-area").classList.remove("hidden");
         $("#error-message").textContent = msg;
     }
+
+    // ==================================================================
+    // ランキングモード専用関数群
+    // ==================================================================
+
+    // ----- ランキングフォームのバインド ----------------------------------
+    function bindRankingForm() {
+        $("#ranking-model-file-input").addEventListener("change", handleRankingModelUpload);
+        $("#btn-add-ranking-var").addEventListener("click", () => {
+            const idx = $$("#ranking-var-table-body tr").length + 1;
+            const row = document.createElement("tr");
+            row.innerHTML = `
+                <td><input type="text" class="var-name" value="x${idx}" placeholder="変数名"></td>
+                <td><input type="number" class="var-lo" value="0" step="any"></td>
+                <td><input type="number" class="var-hi" value="1" step="any"></td>
+                <td><input type="number" class="var-center" value="0.5" step="any"></td>
+                <td><button class="btn-icon btn-remove-rvar" title="削除">&times;</button></td>
+            `;
+            $("#ranking-var-table-body").appendChild(row);
+            bindRankingVarRemoveButtons();
+        });
+        $("#btn-add-group").addEventListener("click", () => {
+            S.rankingGroups.push({ members: [], rankings: [], weight: 1.0 });
+            renderRankingGroups();
+        });
+        $("#btn-auto-group").addEventListener("click", () => {
+            const n = parseInt($("#auto-group-size").value) || 5;
+            autoGroupRanking(n);
+        });
+        bindRankingVarRemoveButtons();
+    }
+
+    function bindRankingVarRemoveButtons() {
+        $$(".btn-remove-rvar").forEach((btn) => {
+            btn.onclick = () => {
+                if ($$("#ranking-var-table-body tr").length > 1) btn.closest("tr").remove();
+            };
+        });
+    }
+
+    async function handleRankingModelUpload(e) {
+        const files = e.target.files;
+        for (const file of files) {
+            const fd = new FormData();
+            fd.append("file", file);
+            try {
+                const res = await fetch("/api/upload-model", { method: "POST", body: fd });
+                const data = await res.json();
+                if (data.error) { alert("アップロードエラー: " + data.error); continue; }
+                // 重複チェック
+                if (!S.rankingUploadedModels.find((m) => m.path === data.path)) {
+                    S.rankingUploadedModels.push(data);
+                }
+            } catch (err) {
+                alert("アップロードに失敗しました: " + err.message);
+            }
+        }
+        e.target.value = "";
+        renderRankingUploadedModels();
+        autoPopulateRankingVars();
+        clearCustomErrors();
+    }
+
+    function renderRankingUploadedModels() {
+        const el = $("#ranking-uploaded-models");
+        el.innerHTML = S.rankingUploadedModels
+            .map((m, i) => `
+                <div class="uploaded-item">
+                    <span>${escapeHtml(m.filename)}
+                        <small class="hint">[${escapeHtml(m.target_name || "不明")}]</small>
+                    </span>
+                    <button class="btn-icon" data-idx="${i}" title="削除">&times;</button>
+                </div>
+            `)
+            .join("");
+        el.querySelectorAll(".btn-icon").forEach((btn) => {
+            btn.addEventListener("click", () => {
+                const removed = S.rankingUploadedModels.splice(parseInt(btn.dataset.idx), 1)[0];
+                // グループからも除去
+                S.rankingGroups.forEach((g) => {
+                    const idx = g.members.indexOf(removed.target_name);
+                    if (idx !== -1) {
+                        g.members.splice(idx, 1);
+                        g.rankings.splice(idx, 1);
+                    }
+                });
+                S.rankingGroups = S.rankingGroups.filter((g) => g.members.length >= 1);
+                renderRankingUploadedModels();
+                autoPopulateRankingVars();
+                renderRankingGroups();
+                clearCustomErrors();
+            });
+        });
+    }
+
+    function autoPopulateRankingVars() {
+        if (S.rankingUploadedModels.length === 0) return;
+        const allVarNames = new Set();
+        S.rankingUploadedModels.forEach((m) => {
+            (m.variable_names || []).forEach((v) => allVarNames.add(v));
+        });
+        const existingVarNames = new Set();
+        $$("#ranking-var-table-body tr").forEach((row) => {
+            const name = row.querySelector(".var-name").value.trim();
+            if (name) existingVarNames.add(name);
+        });
+        const existingRows = $$("#ranking-var-table-body tr");
+        const onlyDefaults = existingRows.length === 1
+            && existingRows[0].querySelector(".var-name").value.trim() === "x1"
+            && !allVarNames.has("x1");
+        if (onlyDefaults) {
+            $("#ranking-var-table-body").innerHTML = "";
+            existingVarNames.clear();
+        }
+        allVarNames.forEach((varName) => {
+            if (!existingVarNames.has(varName)) {
+                const row = document.createElement("tr");
+                row.innerHTML = `
+                    <td><input type="text" class="var-name" value="${escapeHtml(varName)}" placeholder="変数名"></td>
+                    <td><input type="number" class="var-lo" value="0" step="any"></td>
+                    <td><input type="number" class="var-hi" value="1" step="any"></td>
+                    <td><input type="number" class="var-center" value="0.5" step="any"></td>
+                    <td><button class="btn-icon btn-remove-rvar" title="削除">&times;</button></td>
+                `;
+                $("#ranking-var-table-body").appendChild(row);
+            }
+        });
+        bindRankingVarRemoveButtons();
+    }
+
+    // ----- 自動グルーピング --------------------------------------------
+    function autoGroupRanking(n) {
+        const allModels = S.rankingUploadedModels;
+        if (allModels.length === 0) { alert("先にモデルをアップロードしてください。"); return; }
+        S.rankingGroups = [];
+        const names = allModels.map((m) => m.target_name || m.filename.replace(/^ols_/, "").replace(/\.joblib$/, ""));
+        for (let i = 0; i < names.length; i += n) {
+            const members = names.slice(i, i + n);
+            const rankings = members.map((_, k) => k + 1);  // デフォルト: 1,2,3,...
+            S.rankingGroups.push({ members, rankings, weight: 1.0 });
+        }
+        renderRankingGroups();
+    }
+
+    // ----- グループカードのレンダリング ----------------------------------
+    function renderRankingGroups() {
+        const container = $("#ranking-groups-container");
+        container.innerHTML = "";
+        S.rankingGroups.forEach((group, gIdx) => {
+            const card = document.createElement("div");
+            card.className = "group-card";
+            card.dataset.gidx = gIdx;
+
+            // 未使用モデル一覧（このグループに追加可能）
+            const usedInOtherGroups = new Set();
+            S.rankingGroups.forEach((g, gi) => {
+                if (gi !== gIdx) g.members.forEach((m) => usedInOtherGroups.add(m));
+            });
+            const available = S.rankingUploadedModels
+                .map((m) => m.target_name || m.filename.replace(/^ols_/, "").replace(/\.joblib$/, ""))
+                .filter((n) => !group.members.includes(n) && !usedInOtherGroups.has(n));
+
+            const addOptions = available.map((n) => `<option value="${escapeHtml(n)}">${escapeHtml(n)}</option>`).join("");
+
+            card.innerHTML = `
+                <div class="group-header">
+                    <strong>グループ ${gIdx + 1}</strong>
+                    重み: <input type="number" class="group-weight" value="${group.weight}" min="0" step="0.1" style="width:70px">
+                    <button class="btn-icon btn-remove-group" title="グループを削除">&times;</button>
+                </div>
+                <div class="group-members" id="group-members-${gIdx}">
+                    ${group.members.map((m, mi) => `
+                        <span class="group-member" data-member="${escapeHtml(m)}">
+                            ${escapeHtml(m)}
+                            <button class="btn-remove-member" data-midx="${mi}" title="削除">&times;</button>
+                        </span>
+                    `).join("")}
+                </div>
+                ${available.length > 0 ? `
+                    <div style="margin-top:.4rem">
+                        <select class="add-member-select" style="padding:.25rem .4rem;font-size:.82rem;border:1px solid var(--gray-300);border-radius:4px">
+                            <option value="">-- メンバーを追加 --</option>
+                            ${addOptions}
+                        </select>
+                    </div>
+                ` : ""}
+                <div class="ranking-inputs-area">
+                    <label style="font-size:.82rem;font-weight:600;display:block;margin:.5rem 0 .3rem">実機ランキング（1=最良）:</label>
+                    <div style="display:flex;flex-wrap:wrap;gap:.4rem">
+                        ${group.members.map((m, mi) => `
+                            <div style="display:flex;align-items:center;gap:.25rem;font-size:.82rem">
+                                <span title="${escapeHtml(m)}" style="max-width:80px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(m)}</span>:
+                                <input type="number" class="rank-input" data-midx="${mi}" value="${group.rankings[mi] || mi + 1}"
+                                    min="1" max="${group.members.length}" style="width:52px">
+                            </div>
+                        `).join("")}
+                    </div>
+                </div>
+            `;
+
+            // 削除ボタン
+            card.querySelector(".btn-remove-group").onclick = () => {
+                S.rankingGroups.splice(gIdx, 1);
+                renderRankingGroups();
+            };
+
+            // メンバー削除
+            card.querySelectorAll(".btn-remove-member").forEach((btn) => {
+                btn.onclick = () => {
+                    const mi = parseInt(btn.dataset.midx);
+                    group.members.splice(mi, 1);
+                    group.rankings.splice(mi, 1);
+                    renderRankingGroups();
+                };
+            });
+
+            // メンバー追加
+            const sel = card.querySelector(".add-member-select");
+            if (sel) {
+                sel.onchange = () => {
+                    if (!sel.value) return;
+                    group.members.push(sel.value);
+                    group.rankings.push(group.members.length);  // 末尾に追加
+                    renderRankingGroups();
+                };
+            }
+
+            // ランク入力変更
+            card.querySelectorAll(".rank-input").forEach((inp) => {
+                inp.onchange = () => {
+                    const mi = parseInt(inp.dataset.midx);
+                    group.rankings[mi] = parseInt(inp.value) || mi + 1;
+                };
+            });
+
+            // 重み変更
+            card.querySelector(".group-weight").onchange = (e) => {
+                group.weight = parseFloat(e.target.value) || 1.0;
+            };
+
+            container.appendChild(card);
+        });
+    }
+
+    // ----- ランキングバリデーション -------------------------------------
+    function validateRankingConfig() {
+        const errors = [];
+
+        if (S.rankingUploadedModels.length === 0) {
+            errors.push("回帰モデルが1つもアップロードされていません。");
+            return errors;
+        }
+        if (S.rankingGroups.length === 0) {
+            errors.push("グループが1つも定義されていません。");
+            return errors;
+        }
+
+        const modelTargets = new Set(
+            S.rankingUploadedModels.map((m) => m.target_name || m.filename.replace(/^ols_/, "").replace(/\.joblib$/, ""))
+        );
+
+        S.rankingGroups.forEach((g, gi) => {
+            if (g.members.length < 2) {
+                errors.push(`グループ ${gi + 1} のメンバーは2つ以上必要です。`);
+            }
+            const n = g.members.length;
+            const expected = new Set(Array.from({ length: n }, (_, k) => k + 1));
+            const actual = new Set(g.rankings.map(Number));
+            if (JSON.stringify([...expected].sort()) !== JSON.stringify([...actual].sort())) {
+                errors.push(`グループ ${gi + 1} の実機ランキングが正しくありません（1〜${n} の順列である必要があります）。`);
+            }
+            g.members.forEach((m) => {
+                if (!modelTargets.has(m)) {
+                    errors.push(`グループ ${gi + 1} のメンバー「${m}」に対応するモデルがありません。`);
+                }
+            });
+        });
+
+        // 設計変数チェック
+        const definedVars = {};
+        $$("#ranking-var-table-body tr").forEach((row) => {
+            const name = row.querySelector(".var-name").value.trim();
+            const lo = parseFloat(row.querySelector(".var-lo").value);
+            const hi = parseFloat(row.querySelector(".var-hi").value);
+            if (name) definedVars[name] = { lo, hi };
+        });
+        for (const [name, bounds] of Object.entries(definedVars)) {
+            if (isNaN(bounds.lo) || isNaN(bounds.hi)) {
+                errors.push(`設計変数「${name}」の上下限が数値ではありません。`);
+            } else if (bounds.lo >= bounds.hi) {
+                errors.push(`設計変数「${name}」の下限 (${bounds.lo}) が上限 (${bounds.hi}) 以上です。`);
+            }
+        }
+        if (Object.keys(definedVars).length === 0) {
+            errors.push("設計変数が1つも定義されていません。");
+        }
+        return errors;
+    }
+
+    // ----- ランキングサマリーカード -------------------------------------
+    function renderRankingSummary(d) {
+        const el = $("#result-summary");
+        const s = d.summary;
+        el.innerHTML = `
+            <div class="summary-card">
+                <div class="num">${d.best_J.toFixed(3)}</div>
+                <div class="lbl">最良 J 値</div>
+            </div>
+            <div class="summary-card">
+                <div class="num">${d.total_kendall} / ${d.max_kendall}</div>
+                <div class="lbl">合計 Kendall 距離</div>
+            </div>
+            <div class="summary-card">
+                <div class="num" style="color:var(--green)">${s.perfect_groups}</div>
+                <div class="lbl">完全一致グループ</div>
+            </div>
+            <div class="summary-card">
+                <div class="num" style="color:var(--orange)">${s.partial_groups}</div>
+                <div class="lbl">部分一致グループ</div>
+            </div>
+            <div class="summary-card">
+                <div class="num" style="color:var(--red)">${s.mismatch_groups}</div>
+                <div class="lbl">不一致グループ</div>
+            </div>
+            <div class="summary-card">
+                <div class="num">${d.n_solutions}</div>
+                <div class="lbl">候補解の数</div>
+            </div>
+        `;
+    }
+
+    // ----- ランキング比較テーブル ----------------------------------------
+    function renderRankingComparison(d) {
+        const area = $("#ranking-comparison-area");
+        const totalMax = d.max_kendall;
+
+        let html = `
+            <p class="hint">クリックでグループの詳細を展開できます。</p>
+            <div style="margin-bottom:.6rem;font-size:.9rem">
+                合計 Kendall 距離: <strong>${d.total_kendall} / ${totalMax}</strong>
+            </div>
+            <table class="ranking-table">
+                <thead>
+                    <tr>
+                        <th>グループ</th>
+                        <th>実機ランキング（上位から）</th>
+                        <th>予測ランキング（上位から）</th>
+                        <th>Kendall</th>
+                        <th>状態</th>
+                    </tr>
+                </thead>
+                <tbody>
+        `;
+
+        d.group_results.forEach((gr, gi) => {
+            const rowCls = gr.status === "perfect" ? "rank-perfect"
+                : gr.status === "mismatch" ? "rank-mismatch" : "rank-partial";
+            const statusLabel = gr.status === "perfect" ? "✓ 一致"
+                : gr.status === "mismatch" ? "✗ 不一致" : `△ ${gr.kendall_distance}ペア`;
+
+            // 順位→メンバー名の変換（1位から順に）
+            const realOrder = gr.members
+                .map((m, i) => ({ m, r: gr.real_ranking[i] }))
+                .sort((a, b) => a.r - b.r)
+                .map((x) => x.m);
+            const predOrder = gr.members
+                .map((m, i) => ({ m, r: gr.pred_ranking[i] }))
+                .sort((a, b) => a.r - b.r)
+                .map((x) => x.m);
+
+            html += `
+                <tr class="${rowCls} ranking-row" data-gi="${gi}" style="cursor:pointer">
+                    <td>G${gi + 1}</td>
+                    <td>${realOrder.map((m) => escapeHtml(m)).join(" &gt; ")}</td>
+                    <td>${predOrder.map((m) => escapeHtml(m)).join(" &gt; ")}</td>
+                    <td>${gr.kendall_distance} / ${gr.max_kendall_distance}</td>
+                    <td>${statusLabel}</td>
+                </tr>
+                <tr class="rank-detail-row hidden" id="rank-detail-${gi}">
+                    <td colspan="5">
+                        <div class="rank-detail">
+                            <strong>メンバー詳細:</strong>
+                            <table style="margin-top:.3rem;font-size:.82rem;width:100%;border-collapse:collapse">
+                                <tr>
+                                    <th style="text-align:left;padding:.2rem .4rem">特性</th>
+                                    <th style="text-align:right;padding:.2rem .4rem">予測値</th>
+                                    <th style="text-align:center;padding:.2rem .4rem">実機順位</th>
+                                    <th style="text-align:center;padding:.2rem .4rem">予測順位</th>
+                                    <th style="text-align:center;padding:.2rem .4rem">一致</th>
+                                </tr>
+                                ${gr.members.map((m, mi) => {
+                                    const realR = gr.real_ranking[mi];
+                                    const predR = gr.pred_ranking[mi];
+                                    const match = realR === predR;
+                                    const predVal = gr.predicted_values[m];
+                                    return `<tr style="background:${match ? '#f1f8e9' : '#fce4ec'}">
+                                        <td style="padding:.2rem .4rem;font-weight:600">${escapeHtml(m)}</td>
+                                        <td style="text-align:right;padding:.2rem .4rem;font-family:var(--mono)">${predVal != null ? predVal.toFixed(4) : "-"}</td>
+                                        <td style="text-align:center;padding:.2rem .4rem">${realR}</td>
+                                        <td style="text-align:center;padding:.2rem .4rem">${predR}</td>
+                                        <td style="text-align:center;padding:.2rem .4rem">${match ? "✓" : "✗"}</td>
+                                    </tr>`;
+                                }).join("")}
+                            </table>
+                        </div>
+                    </td>
+                </tr>
+            `;
+        });
+
+        html += "</tbody></table>";
+        area.innerHTML = html;
+
+        // 行クリックで詳細展開
+        area.querySelectorAll(".ranking-row").forEach((row) => {
+            row.addEventListener("click", () => {
+                const gi = row.dataset.gi;
+                const detailRow = area.querySelector(`#rank-detail-${gi}`);
+                if (detailRow) detailRow.classList.toggle("hidden");
+            });
+        });
+    }
+
+    // ----- 収束グラフ --------------------------------------------------
+    function renderConvergenceChart(d) {
+        const history = d.convergence_history || [];
+        if (history.length === 0) {
+            $("#convergence-chart").innerHTML = '<p class="hint" style="padding:2rem">収束履歴データがありません。</p>';
+            return;
+        }
+        const gens = history.map((_, i) => i + 1);
+        const trace = {
+            x: gens,
+            y: history,
+            mode: "lines",
+            type: "scatter",
+            line: { color: "#3949ab", width: 2 },
+            name: "最良 J 値",
+        };
+        const layout = {
+            title: "収束グラフ（世代 vs 最良 J 値）",
+            xaxis: { title: "世代" },
+            yaxis: { title: "J(x)" },
+            margin: { l: 60, r: 30, t: 50, b: 50 },
+        };
+        Plotly.newPlot("convergence-chart", [trace], layout, { responsive: true });
+    }
+
 })();

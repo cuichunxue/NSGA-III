@@ -225,3 +225,233 @@ class MultiObjectiveProblem(Problem):
     def _evaluate(self, X, out, *args, **kwargs):
         F, _ = self.obj_calculator.compute_objectives(X)
         out["F"] = F
+
+
+class RankingObjectiveCalculator:
+    """ランキング一致を目的関数として計算する。
+
+    予測ランキングと実機ランキングの Kendall 距離および
+    連続マージン補正項を最小化する単一スカラー目的関数を提供する。
+
+    同点（タイ）処理:
+        np.argsort に stable=True を指定し、同値はグループ内インデックス昇順で処理する。
+        すなわち、値が等しい場合は元のグループインデックスが小さい要素が上位とみなされる。
+    """
+
+    def __init__(
+        self,
+        predictor: OLSModelPredictor,
+        groups: List[List[str]],
+        real_rankings: List[List[int]],
+        weights: List[float],
+        margin_lambda: float = 0.01,
+        margin_delta: float = 0.01,
+    ):
+        """
+        Parameters
+        ----------
+        predictor : OLSModelPredictor
+        groups : List[List[str]]
+            各グループ内の特性名リスト
+        real_rankings : List[List[int]]
+            各グループ内の実機順位（1-indexed, 1 が最良）
+            real_rankings[g][i] = groups[g][i] の実機順位
+        weights : List[float]
+            グループ重み w_g
+        margin_lambda : float
+            連続マージン補正項の重み λ
+        margin_delta : float
+            マージン幅 δ
+        """
+        self.predictor = predictor
+        self.groups = groups
+        self.real_rankings = real_rankings
+        self.weights = weights
+        self.margin_lambda = margin_lambda
+        self.margin_delta = margin_delta
+
+        all_target_names = predictor.target_names
+
+        # 各グループの特性インデックス（predictor.target_names 内）
+        self._group_indices: List[List[int]] = []
+        for group_members in groups:
+            indices = []
+            for name in group_members:
+                if name in all_target_names:
+                    indices.append(all_target_names.index(name))
+                else:
+                    raise ValueError(f"特性名がモデルに存在しません: {name}")
+            self._group_indices.append(indices)
+
+    @staticmethod
+    def kendall_distance(ordering_a: List[int], ordering_b: List[int]) -> int:
+        """2つの順序付けリストの Kendall 距離（逆転ペア数）を計算する。
+
+        Parameters
+        ----------
+        ordering_a, ordering_b : 要素 0..n-1 の順列（先頭が最高位）
+
+        Returns
+        -------
+        int : 逆転ペア数（0 以上 n*(n-1)/2 以下）
+        """
+        n = len(ordering_a)
+        pos_b = {val: idx for idx, val in enumerate(ordering_b)}
+        distance = 0
+        for i in range(n):
+            for j in range(i + 1, n):
+                # ordering_a で ordering_a[i] が ordering_a[j] より前にあるのに
+                # ordering_b では後ろにある場合を逆転とみなす
+                if pos_b[ordering_a[i]] > pos_b[ordering_a[j]]:
+                    distance += 1
+        return distance
+
+    def compute_objective(
+        self, X: np.ndarray
+    ) -> Tuple[np.ndarray, np.ndarray, List[dict]]:
+        """目的関数値 J(x)、全予測値 Y、グループ詳細を計算する。
+
+        J(x) = Σ_g w_g * d_g(x) + λ * Σ_g C_g(x)
+
+        Parameters
+        ----------
+        X : (n_samples, n_var)
+
+        Returns
+        -------
+        J : (n_samples, 1) 目的関数値
+        Y : (n_samples, K) 全特性の予測値
+        group_details : List[dict] 最初のサンプルのグループ詳細（結果表示用）
+        """
+        Y, _ = self.predictor.predict(X)  # (n_samples, K)
+        n_samples = X.shape[0]
+        J = np.zeros(n_samples)
+        delta = self.margin_delta
+
+        group_details = []
+
+        for g, (group_indices, weight) in enumerate(
+            zip(self._group_indices, self.weights)
+        ):
+            ranks = self.real_rankings[g]
+            ng = len(group_indices)
+            group_Y = Y[:, group_indices]  # (n_samples, ng)
+
+            d_g = np.zeros(n_samples)
+            C_g = np.zeros(n_samples)
+
+            # 全ペア (i, j) を走査 (i < j, グループ内インデックス)
+            for i in range(ng):
+                for j in range(i + 1, ng):
+                    # 実機でどちらが上位か (ranks が小さいほど上位)
+                    if ranks[i] < ranks[j]:
+                        better, worse = i, j
+                    else:
+                        better, worse = j, i
+
+                    # 予測値差: 上位予測 - 下位予測（正なら concordant 方向）
+                    diff = group_Y[:, better] - group_Y[:, worse]  # (n_samples,)
+
+                    # Kendall 距離: タイ処理（stable argsort 規則）
+                    # stable 降順ソートでは同値の場合、元インデックス小さい方が先頭
+                    # → better < worse のとき diff==0 は concordant
+                    # → better > worse のとき diff==0 は discordant
+                    if better < worse:
+                        discordant_mask = diff < 0
+                    else:
+                        discordant_mask = diff <= 0
+
+                    d_g += discordant_mask.astype(np.float64)
+
+                    # 連続マージン補正項
+                    concordant_mask = ~discordant_mask
+                    # concordant pair: max(0, δ - diff)
+                    C_g += np.where(
+                        concordant_mask,
+                        np.maximum(0.0, delta - diff),
+                        0.0,
+                    )
+                    # discordant pair: -diff + δ（diff≦0 なので -diff≧0）
+                    C_g += np.where(
+                        discordant_mask,
+                        -diff + delta,
+                        0.0,
+                    )
+
+            J += weight * d_g + self.margin_lambda * C_g
+
+            # 最初のサンプルのグループ詳細を記録（結果表示用）
+            y0 = group_Y[0]
+            pred_ordering = list(np.argsort(-y0, kind="stable"))
+            real_ordering = sorted(range(ng), key=lambda k: ranks[k])
+
+            group_details.append({
+                "group_index": g,
+                "members": self.groups[g],
+                "real_ordering": real_ordering,
+                "pred_ordering": pred_ordering,
+                "kendall_distance": int(d_g[0]),
+                "C_g": float(C_g[0]),
+                "predicted_values": {
+                    self.groups[g][k]: float(y0[k]) for k in range(ng)
+                },
+            })
+
+        return J.reshape(-1, 1), Y, group_details
+
+    def compute_group_distances(self, X: np.ndarray) -> np.ndarray:
+        """各サンプル・各グループの Kendall 距離を一括計算する。
+
+        Returns
+        -------
+        D : (n_samples, n_groups) int 配列
+        """
+        Y, _ = self.predictor.predict(X)
+        n_samples = X.shape[0]
+        n_groups = len(self.groups)
+        D = np.zeros((n_samples, n_groups), dtype=int)
+
+        for g, group_indices in enumerate(self._group_indices):
+            ranks = self.real_rankings[g]
+            ng = len(group_indices)
+            group_Y = Y[:, group_indices]
+
+            for i in range(ng):
+                for j in range(i + 1, ng):
+                    if ranks[i] < ranks[j]:
+                        better, worse = i, j
+                    else:
+                        better, worse = j, i
+
+                    diff = group_Y[:, better] - group_Y[:, worse]
+
+                    if better < worse:
+                        D[:, g] += (diff < 0).astype(int)
+                    else:
+                        D[:, g] += (diff <= 0).astype(int)
+
+        return D
+
+
+class RankingProblem(Problem):
+    """pymoo 用のランキング最適化問題定義（単一目的）。"""
+
+    def __init__(
+        self,
+        obj_calculator: RankingObjectiveCalculator,
+        xl: np.ndarray,
+        xu: np.ndarray,
+    ):
+        self.obj_calculator = obj_calculator
+        super().__init__(
+            n_var=len(xl),
+            n_obj=1,
+            n_ieq_constr=0,
+            xl=xl,
+            xu=xu,
+            vtype=float,
+        )
+
+    def _evaluate(self, X, out, *args, **kwargs):
+        J, _, _ = self.obj_calculator.compute_objective(X)
+        out["F"] = J  # (n_samples, 1)

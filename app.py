@@ -98,10 +98,14 @@ def api_optimize():
     if not isinstance(config, dict):
         return jsonify({"error": "リクエストはJSON辞書である必要があります"}), 400
 
-    # カスタムモードの厳密バリデーション
+    # モード別バリデーション
     mode = config.get("mode", "demo")
     if mode == "custom":
         err = _validate_custom_config(config)
+        if err:
+            return jsonify({"error": err}), 400
+    elif mode == "ranking":
+        err = _validate_ranking_config(config)
         if err:
             return jsonify({"error": err}), 400
 
@@ -318,6 +322,77 @@ def _extract_variable_names(features: list) -> list:
         # 一次項（変数名そのもの）
         var_names.add(feat)
     return sorted(var_names)
+
+
+def _validate_ranking_config(config: dict) -> str | None:
+    """ランキングモードの設定を検証する。不整合があればエラーメッセージを返す。"""
+    variables = config.get("variables")
+    model_paths = config.get("model_paths")
+    groups = config.get("groups")
+    real_rankings = config.get("real_rankings")
+
+    if not variables or not isinstance(variables, dict):
+        return "設計変数が定義されていません。"
+    if not model_paths or not isinstance(model_paths, dict):
+        return "回帰モデルがアップロードされていません。"
+    if not groups or not isinstance(groups, list):
+        return "グループが定義されていません。"
+    if not real_rankings or not isinstance(real_rankings, list):
+        return "実機ランキングが定義されていません。"
+    if len(groups) != len(real_rankings):
+        return f"グループ数 ({len(groups)}) と実機ランキング数 ({len(real_rankings)}) が一致しません。"
+
+    model_keys = set(model_paths.keys())
+
+    for g, (group_members, ranks) in enumerate(zip(groups, real_rankings)):
+        if not isinstance(group_members, list) or len(group_members) < 2:
+            return f"グループ {g + 1} のメンバーは2つ以上必要です。"
+        if not isinstance(ranks, list) or len(ranks) != len(group_members):
+            return (
+                f"グループ {g + 1} の実機ランキングの要素数 ({len(ranks) if isinstance(ranks, list) else '?'}) が"
+                f"メンバー数 ({len(group_members)}) と一致しません。"
+            )
+        # 順列の検証（重複なし・欠落なしの 1〜N）
+        expected = set(range(1, len(group_members) + 1))
+        if set(ranks) != expected:
+            return (
+                f"グループ {g + 1} の実機ランキングが正しい順列ではありません。"
+                f"1〜{len(group_members)} の数値を重複なく指定してください。"
+            )
+        # 各メンバーがモデルに存在するか
+        for name in group_members:
+            if name not in model_keys:
+                return f"グループ {g + 1} のメンバー「{name}」に対応するモデルがありません。"
+
+    # 設計変数の検証
+    for var_name, bounds in variables.items():
+        if not isinstance(bounds, (list, tuple)) or len(bounds) != 3:
+            return f"設計変数「{var_name}」のフォーマットが不正です（[下限, 上限, 中心値] が必要）。"
+        lo, hi, _ = bounds
+        if lo >= hi:
+            return f"設計変数「{var_name}」の下限 ({lo}) が上限 ({hi}) 以上です。"
+
+    # モデルが参照する変数が設計変数に含まれているかチェック
+    import joblib
+
+    defined_vars = set(variables.keys())
+    for target_name, path in model_paths.items():
+        try:
+            model = joblib.load(path)
+            if hasattr(model, "params") and hasattr(model.params, "index"):
+                features = model.params.index.tolist()
+                required_vars = set(_extract_variable_names(features))
+                missing_vars = required_vars - defined_vars
+                if missing_vars:
+                    return (
+                        f"モデル「{target_name}」が変数 "
+                        f"{', '.join(sorted(missing_vars))} を参照していますが、"
+                        f"設計変数に定義されていません。"
+                    )
+        except Exception:
+            return f"モデル「{target_name}」の読み込みに失敗しました: {path}"
+
+    return None
 
 
 def _validate_custom_config(config: dict) -> str | None:

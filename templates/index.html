@@ -52,6 +52,7 @@
         <div class="mode-toggle">
             <button class="btn-mode active" data-mode="demo" id="btn-mode-demo">デモ問題</button>
             <button class="btn-mode" data-mode="custom" id="btn-mode-custom">カスタム（OLSモデル）</button>
+            <button class="btn-mode" data-mode="ranking" id="btn-mode-ranking">ランキング最適化</button>
         </div>
 
         <!-- デモ問題カード -->
@@ -173,6 +174,87 @@
             </div>
         </div>
 
+        <!-- ランキングモード -->
+        <div id="ranking-section" class="hidden">
+            <div class="card info-card">
+                <h3>ランキング最適化設定</h3>
+                <p>OLS モデルで予測したランキングが実機ランキングと一致するよう設計因子を最適化します。</p>
+
+                <!-- モデルアップロード -->
+                <div class="form-group">
+                    <label>モデルファイル (.joblib)</label>
+                    <p class="hint">ファイル名の命名規則: <code>ols_特性名.joblib</code>（例: <code>ols_硬度.joblib</code>）</p>
+                    <div class="upload-area" id="ranking-upload-area">
+                        <div id="ranking-upload-prompt">
+                            <span class="upload-icon">+</span>
+                            <span>クリックまたはドラッグ&amp;ドロップ</span>
+                        </div>
+                        <input type="file" id="ranking-model-file-input" accept=".joblib" multiple>
+                    </div>
+                    <div id="ranking-uploaded-models" class="uploaded-list"></div>
+                </div>
+
+                <!-- 設計変数テーブル -->
+                <div class="form-group">
+                    <label>設計変数（設計因子）</label>
+                    <p class="hint">モデルが参照する全ての変数をここに定義してください。モデルアップロード時に自動追加されます。</p>
+                    <table class="var-table" id="ranking-var-table">
+                        <thead>
+                            <tr>
+                                <th>変数名</th>
+                                <th>下限</th>
+                                <th>上限</th>
+                                <th>中心値</th>
+                                <th></th>
+                            </tr>
+                        </thead>
+                        <tbody id="ranking-var-table-body">
+                            <tr>
+                                <td><input type="text" class="var-name" value="x1" placeholder="変数名"></td>
+                                <td><input type="number" class="var-lo" value="0" step="any"></td>
+                                <td><input type="number" class="var-hi" value="1" step="any"></td>
+                                <td><input type="number" class="var-center" value="0.5" step="any"></td>
+                                <td><button class="btn-icon btn-remove-rvar" title="削除">&times;</button></td>
+                            </tr>
+                        </tbody>
+                    </table>
+                    <button class="btn-sm" id="btn-add-ranking-var">+ 変数を追加</button>
+                </div>
+
+                <!-- グルーピング定義 -->
+                <div class="form-group">
+                    <label>グループ定義</label>
+                    <p class="hint">特性をグループに分割し、各グループ内の実機ランキング（1=最良）を設定してください。</p>
+
+                    <div class="auto-group-bar">
+                        <button class="btn-sm" id="btn-auto-group">自動グルーピング</button>
+                        <input type="number" id="auto-group-size" value="5" min="2" max="20" style="width:60px">
+                        <span class="hint" style="margin-bottom:0">個ずつ</span>
+                    </div>
+
+                    <div id="ranking-groups-container"></div>
+                    <button class="btn-sm" id="btn-add-group" style="margin-top:.5rem">+ グループを追加</button>
+                </div>
+
+                <!-- 詳細設定 -->
+                <details class="form-group">
+                    <summary style="cursor:pointer;font-weight:600;font-size:.9rem;margin-bottom:.5rem">詳細設定（マージン補正）</summary>
+                    <div class="settings-grid" style="margin-top:.5rem">
+                        <div class="setting-card">
+                            <label for="ranking-lambda">λ（補正項の重み）</label>
+                            <input type="number" id="ranking-lambda" value="0.01" step="0.001" min="0">
+                            <small class="hint">Kendall 距離に加える連続補正項の重み。</small>
+                        </div>
+                        <div class="setting-card">
+                            <label for="ranking-delta">δ（マージン幅）</label>
+                            <input type="number" id="ranking-delta" value="0.01" step="0.001" min="0">
+                            <small class="hint">concordant ペアに求める最低マージン。</small>
+                        </div>
+                    </div>
+                </details>
+            </div>
+        </div>
+
         <!-- バリデーションエラー表示 -->
         <div id="custom-validation-errors" class="hidden"></div>
 
@@ -273,11 +355,16 @@
         </div>
 
         <!-- タブ切り替え -->
-        <div class="tab-bar">
-            <button class="tab active" data-tab="chart">パレートフロント</button>
-            <button class="tab" data-tab="parallel">パラレルプロット</button>
-            <button class="tab" data-tab="table">解一覧テーブル</button>
-            <button class="tab" data-tab="predict">予測シミュレータ</button>
+        <div class="tab-bar" id="result-tab-bar">
+            <!-- 通常モード用タブ（hidden クラスは JS で制御） -->
+            <button class="tab active" data-tab="chart" id="tab-btn-chart">パレートフロント</button>
+            <button class="tab" data-tab="parallel" id="tab-btn-parallel">パラレルプロット</button>
+            <!-- 共通タブ -->
+            <button class="tab" data-tab="table" id="tab-btn-table">解一覧テーブル</button>
+            <button class="tab" data-tab="predict" id="tab-btn-predict">予測シミュレータ</button>
+            <!-- ランキングモード専用タブ -->
+            <button class="tab hidden" data-tab="ranking" id="tab-btn-ranking">ランキング比較</button>
+            <button class="tab hidden" data-tab="convergence" id="tab-btn-convergence">収束グラフ</button>
         </div>
 
         <!-- パレートフロントチャート -->
@@ -322,6 +409,16 @@
                     </div>
                 </div>
             </div>
+        </div>
+
+        <!-- ランキング比較タブ（ランキングモード専用） -->
+        <div class="tab-content" id="tab-ranking">
+            <div id="ranking-comparison-area"></div>
+        </div>
+
+        <!-- 収束グラフタブ（ランキングモード専用） -->
+        <div class="tab-content" id="tab-convergence">
+            <div id="convergence-chart" class="chart-container"></div>
         </div>
 
         <div class="actions">
