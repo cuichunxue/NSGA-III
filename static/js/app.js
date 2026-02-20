@@ -440,12 +440,12 @@
 
     function applyStep2Defaults() {
         if (S.mode === "ranking") {
-            $("#pop-size").value = 300;
+            // 高精度プリセット（200/500）をランキングモードのデフォルトとして使用
+            $("#pop-size").value = 200;
             $("#n-gen").value = 500;
             $$(".btn-preset").forEach((b) => b.classList.remove("active"));
-            // バランスプリセット相当を active に
             $$(".btn-preset").forEach((b) => {
-                if (b.dataset.pop === "300" && b.dataset.gen === "500") b.classList.add("active");
+                if (b.dataset.pop === "200" && b.dataset.gen === "500") b.classList.add("active");
             });
         } else if (S.mode === "demo") {
             $("#pop-size").value = 100;
@@ -1257,6 +1257,14 @@
                     if (idx !== -1) {
                         g.members.splice(idx, 1);
                         g.rankings.splice(idx, 1);
+                        // 削除後にランキングを 1..N の順列に再正規化
+                        const n = g.members.length;
+                        if (n > 0) {
+                            const pairs = g.rankings.map((r, i) => ({ r, i })).sort((a, b) => a.r - b.r);
+                            const newRanks = new Array(n);
+                            pairs.forEach((x, pos) => { newRanks[x.i] = pos + 1; });
+                            g.rankings = newRanks;
+                        }
                     }
                 });
                 S.rankingGroups = S.rankingGroups.filter((g) => g.members.length >= 1);
@@ -1385,6 +1393,14 @@
                     const mi = parseInt(btn.dataset.midx);
                     group.members.splice(mi, 1);
                     group.rankings.splice(mi, 1);
+                    // 削除後にランキングを 1..N の順列に再正規化
+                    const n = group.members.length;
+                    if (n > 0) {
+                        const pairs = group.rankings.map((r, i) => ({ r, i })).sort((a, b) => a.r - b.r);
+                        const newRanks = new Array(n);
+                        pairs.forEach((x, pos) => { newRanks[x.i] = pos + 1; });
+                        group.rankings = newRanks;
+                    }
                     renderRankingGroups();
                 };
             });

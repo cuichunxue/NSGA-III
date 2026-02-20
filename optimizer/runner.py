@@ -125,10 +125,10 @@ def predict_single(config: Dict[str, Any], values: Dict[str, float]) -> Dict[str
         total_kendall = 0
         for g, (group_members, real_ranks) in enumerate(zip(groups, real_rankings)):
             ng = len(group_members)
+            # モデルがロードされていない場合は 0.0 にフォールバック（len は常に ng）
             y_g = np.array([
-                float(Y[0, target_names.index(name)])
+                float(Y[0, target_names.index(name)]) if name in target_names else 0.0
                 for name in group_members
-                if name in target_names
             ])
 
             pred_ordering = list(np.argsort(-y_g, kind="stable"))
