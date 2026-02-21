@@ -11,6 +11,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 from pymoo.algorithms.moo.nsga3 import NSGA3
 from pymoo.core.callback import Callback
+from pymoo.core.termination import Termination
 from pymoo.optimize import minimize
 from pymoo.termination import get_termination
 from pymoo.util.ref_dirs import get_reference_directions
@@ -216,16 +217,54 @@ def predict_single(config: Dict[str, Any], values: Dict[str, float]) -> Dict[str
 
 
 # ---------------------------------------------------------------------------
+# 終了条件: 完璧な解による早期終了（ランキングモード専用）
+# ---------------------------------------------------------------------------
+
+class _PerfectSolutionTermination(Termination):
+    """J ≤ threshold になった時点、または最大世代数到達で終了する。
+
+    ランキング最適化では全グループの Kendall 距離 = 0 になると
+    J = λ * C_g << min(w_g) となるため、0.5 * min_weight を
+    しきい値とすることで「完璧な解が見つかった」を低コストで検知できる。
+    """
+
+    def __init__(self, n_gen_max: int, threshold: float = 0.5):
+        super().__init__()
+        self.n_gen_max = n_gen_max
+        self.threshold = threshold
+
+    def _update(self, algorithm):
+        n = algorithm.n_gen
+        if n >= self.n_gen_max:
+            return 1.0  # 最大世代数に到達
+        try:
+            opt = algorithm.opt
+            if opt is not None:
+                best_F = opt.get("F")
+                if best_F is not None and float(best_F[0, 0]) <= self.threshold:
+                    return 1.0  # 完璧（またはほぼ完璧）な解が見つかった
+        except Exception:
+            pass
+        return float(n) / self.n_gen_max
+
+
+# ---------------------------------------------------------------------------
 # 進捗コールバック
 # ---------------------------------------------------------------------------
 
 class _ProgressCallback(Callback):
     """各世代で進捗情報を通知するコールバック。"""
 
-    def __init__(self, n_gen_total: int, notify_fn: Callable):
+    def __init__(
+        self,
+        n_gen_total: int,
+        notify_fn: Callable,
+        best_solution_fn: Optional[Callable] = None,
+    ):
         super().__init__()
         self._n_gen_total = n_gen_total
         self._notify_fn = notify_fn
+        self._best_solution_fn = best_solution_fn  # グローバルベスト追跡用（任意）
 
     def notify(self, algorithm):
         gen = algorithm.n_gen
@@ -233,6 +272,18 @@ class _ProgressCallback(Callback):
         pop_f = algorithm.pop.get("F")
         best_f = float(np.min(np.sum(pop_f, axis=1))) if pop_f is not None else None
         self._notify_fn(gen, self._n_gen_total, best_f)
+
+        # グローバルベスト追跡（ランキングモード専用）
+        if self._best_solution_fn is not None:
+            try:
+                opt = algorithm.opt
+                if opt is not None:
+                    x = opt.get("X")
+                    f = opt.get("F")
+                    if x is not None and f is not None:
+                        self._best_solution_fn(x, f)
+            except Exception:
+                pass
 
 
 # ---------------------------------------------------------------------------
@@ -389,11 +440,23 @@ class OptimizationRunner:
             directions=directions,
         )
 
-    # ---- ranking (single-objective GA) mode ------------------------------
+    # ---- ranking (single-objective DE) mode ------------------------------
 
     def _run_ranking(self) -> Dict[str, Any]:
-        """ランキング最適化を実行する（単一目的 GA）。"""
-        from pymoo.algorithms.soo.nonconvex.ga import GA
+        """ランキング最適化を実行する（単一目的 DE = 差分進化）。
+
+        改善点:
+          1. アルゴリズム: GA → DE/rand/1/bin
+             連続 BBox 最適化で GA より速く収束し、同じ評価回数でより良い解が得られる。
+          2. アダプティブ δ
+             中心値での予測値の標準偏差を基にマージン幅を自動スケーリング。
+             δ << 予測スケールだと C_g 勾配が機能せず GA/DE が停滞するのを防ぐ。
+          3. 早期終了 (_PerfectSolutionTermination)
+             全グループ Kendall = 0 を検知したら残り世代を消費せず終了。
+          4. グローバルベスト追跡
+             最終 population が退化していても最良解を失わない。
+        """
+        from pymoo.algorithms.soo.nonconvex.de import DE
 
         config = self.config
         variables = config.get("variables")
@@ -410,12 +473,12 @@ class OptimizationRunner:
         if not real_rankings:
             raise RuntimeError("実機ランキングが定義されていません。")
 
-        pop_size = int(config.get("pop_size", 300))
+        pop_size = int(config.get("pop_size", 200))
         n_gen = int(config.get("n_gen", 500))
         seed = int(config.get("seed", 42))
         group_weights = config.get("group_weights") or [1.0] * len(groups)
         margin_lambda = float(config.get("margin_lambda", 0.01))
-        margin_delta = float(config.get("margin_delta", 0.01))
+        margin_delta_user = float(config.get("margin_delta", 0.01))
 
         variable_names = list(variables.keys())
         xl = np.array([v[0] for v in variables.values()])
@@ -426,23 +489,53 @@ class OptimizationRunner:
         if not predictor.target_names:
             raise RuntimeError("有効なモデルがロードされませんでした。ファイルパスを確認してください。")
 
+        # ── アダプティブ δ ───────────────────────────────────────────────────
+        # 中心値で一度だけ予測し、グループ内予測値の標準偏差を計算する。
+        # δ を 0.1 × std にスケーリングすることで、C_g 項が実際の勾配情報を
+        # 提供できる範囲を自動調整する。ユーザー指定 δ より小さくはならない。
+        X_center = np.array([[center_values[v] for v in variable_names]])
+        Y_center, _ = predictor.predict(X_center)
+        group_vals = [
+            float(Y_center[0, predictor.target_names.index(name)])
+            for grp in groups
+            for name in grp
+            if name in predictor.target_names
+        ]
+        if len(group_vals) >= 2:
+            val_scale = float(np.std(group_vals))
+            if val_scale < 1e-6:
+                val_scale = float(np.ptp(group_vals))  # フォールバック: peak-to-peak
+            margin_delta = max(margin_delta_user, 0.1 * val_scale)
+        else:
+            margin_delta = margin_delta_user
+
         obj_calculator = RankingObjectiveCalculator(
             predictor, groups, real_rankings, group_weights,
             margin_lambda, margin_delta,
         )
         problem = RankingProblem(obj_calculator, xl, xu)
 
-        # 収束履歴を記録する
+        # ── グローバルベスト追跡 ──────────────────────────────────────────────
         convergence_history: List[float] = []
+        global_best_X: List[Optional[np.ndarray]] = [None]
+        global_best_F: List[float] = [np.inf]
 
-        def on_progress_with_history(gen, total, best_val):
+        def on_progress(gen, total, best_val):
             if best_val is not None:
                 convergence_history.append(round(float(best_val), 6))
             self.progress_callback(gen, total, best_val)
 
-        algorithm = GA(pop_size=pop_size)
-        termination = get_termination("n_gen", n_gen)
-        callback = _ProgressCallback(n_gen, on_progress_with_history)
+        def update_global_best(x: np.ndarray, f: np.ndarray):
+            val = float(f[0, 0])
+            if val < global_best_F[0]:
+                global_best_F[0] = val
+                global_best_X[0] = x.copy()  # x は (1, n_var) shape
+
+        # ── DE + 早期終了 ────────────────────────────────────────────────────
+        algorithm = DE(pop_size=pop_size, variant="DE/rand/1/bin", CR=0.9, F=0.8)
+        threshold_early_stop = 0.5 * min(group_weights)
+        termination = _PerfectSolutionTermination(n_gen, threshold_early_stop)
+        callback = _ProgressCallback(n_gen, on_progress, update_global_best)
 
         result = minimize(
             problem,
@@ -460,6 +553,12 @@ class OptimizationRunner:
         sort_idx = np.argsort(final_F[:, 0])[:20]
         top_X = final_X[sort_idx]
         top_F = final_F[sort_idx]
+
+        # グローバルベストが最終 pop の最良より優れていれば先頭に挿入し、
+        # 最後の解を押し出して top 20 の件数を維持する
+        if global_best_X[0] is not None and global_best_F[0] < top_F[0, 0] - 1e-9:
+            top_X = np.vstack([global_best_X[0], top_X[:-1]])
+            top_F = np.vstack([np.array([[global_best_F[0]]]), top_F[:-1, :]])
 
         return self._build_ranking_result(
             top_X, top_F, variable_names,
