@@ -94,6 +94,21 @@
         }
     }
 
+    // ----- 重み入力の有効/無効切替 ----------------------------------------
+    function updateWeightInputsState() {
+        const aggMode = document.querySelector('input[name="agg-mode"]:checked');
+        const isAggregated = aggMode ? aggMode.value === "aggregated" : true;
+        $$("#target-table-body .tgt-weight").forEach((input) => {
+            input.disabled = !isAggregated;
+            input.title = isAggregated
+                ? "優先度の重み（デフォルト: 1）"
+                : "Fullモードでは重みは無効です";
+        });
+        // 重み列ヘッダーも視覚的に反映
+        const weightTh = document.querySelector("#target-table thead th:nth-child(4)");
+        if (weightTh) weightTh.style.opacity = isAggregated ? "1" : "0.4";
+    }
+
     // ----- 目標値行 HTML 生成ヘルパー ------------------------------------
     function _makeTgtRowHtml(name, direction, val, weight) {
         const targetSel = direction === "target" ? "selected" : "";
@@ -139,13 +154,20 @@
             $("#target-table-body").appendChild(row);
             bindRemoveButtons();
             bindDirectionToggles();
+            updateWeightInputsState();
         });
 
         // モデルアップロード
         $("#model-file-input").addEventListener("change", handleModelUpload);
 
+        // 集約モード切替で重み入力を有効/無効
+        $$('input[name="agg-mode"]').forEach((radio) => {
+            radio.addEventListener("change", updateWeightInputsState);
+        });
+
         bindRemoveButtons();
         bindDirectionToggles();
+        updateWeightInputsState();
     }
 
     function bindDirectionToggles() {
@@ -192,6 +214,7 @@
         e.target.value = "";
         renderUploadedModels();
         autoPopulateFromModels();
+        updateWeightInputsState();
         clearCustomErrors();
     }
 
@@ -303,6 +326,7 @@
 
         bindRemoveButtons();
         bindDirectionToggles();
+        updateWeightInputsState();
     }
 
     /**
@@ -401,16 +425,19 @@
             }
         }
 
-        // チェック8: 重みが正の数か
-        $$("#target-table-body tr").forEach((row) => {
-            const name = row.querySelector(".tgt-name").value.trim();
-            const wInput = row.querySelector(".tgt-weight");
-            if (!name || !wInput) return;
-            const w = parseFloat(wInput.value);
-            if (isNaN(w) || w <= 0) {
-                errors.push(`「${name}」の重みは 0 より大きい数値を入力してください。`);
-            }
-        });
+        // チェック8: 重みが正の数か（aggregatedモードのみ）
+        const currentAggMode = document.querySelector('input[name="agg-mode"]:checked');
+        if (!currentAggMode || currentAggMode.value === "aggregated") {
+            $$("#target-table-body tr").forEach((row) => {
+                const name = row.querySelector(".tgt-name").value.trim();
+                const wInput = row.querySelector(".tgt-weight");
+                if (!name || !wInput || wInput.disabled) return;
+                const w = parseFloat(wInput.value);
+                if (isNaN(w) || w <= 0) {
+                    errors.push(`「${name}」の重みは 0 より大きい数値を入力してください。`);
+                }
+            });
+        }
 
         return errors;
     }
@@ -522,20 +549,26 @@
             problemDesc = `<strong>問題:</strong> カスタム OLS (変数 ${nVar}個, モデル ${nModel}個)`;
 
             // 重み情報を集計して表示
-            const weightParts = [];
-            let allOne = true;
-            $$("#target-table-body tr").forEach((row) => {
-                const name = row.querySelector(".tgt-name").value.trim();
-                const w = parseFloat(row.querySelector(".tgt-weight").value) || 1.0;
-                if (name) {
-                    weightParts.push(`${escapeHtml(name)}: <strong>${w}</strong>`);
-                    if (w !== 1.0) allOne = false;
-                }
-            });
-            if (allOne) {
-                weightDesc = `<strong>重み:</strong> 均等（全て 1.0）`;
+            const aggModeEl = document.querySelector('input[name="agg-mode"]:checked');
+            const isAggregated = aggModeEl ? aggModeEl.value === "aggregated" : true;
+            if (!isAggregated) {
+                weightDesc = `<strong>重み:</strong> <span style="color:var(--gray-500)">無効（Fullモードでは重みは使用されません）</span>`;
             } else {
-                weightDesc = `<strong>重み:</strong> ${weightParts.join(" &nbsp;|&nbsp; ")}`;
+                const weightParts = [];
+                let allOne = true;
+                $$("#target-table-body tr").forEach((row) => {
+                    const name = row.querySelector(".tgt-name").value.trim();
+                    const w = parseFloat(row.querySelector(".tgt-weight").value) || 1.0;
+                    if (name) {
+                        weightParts.push(`${escapeHtml(name)}: <strong>${w}</strong>`);
+                        if (w !== 1.0) allOne = false;
+                    }
+                });
+                if (allOne) {
+                    weightDesc = `<strong>重み:</strong> 均等（全て 1.0）`;
+                } else {
+                    weightDesc = `<strong>重み:</strong> ${weightParts.join(" &nbsp;|&nbsp; ")}`;
+                }
             }
         }
 

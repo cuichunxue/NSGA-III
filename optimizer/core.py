@@ -131,10 +131,10 @@ class ObjectiveCalculator:
       - "maximize": 予測値 Y を最大化（内部的には -Y を最小化）
       - "minimize": 予測値 Y を最小化
 
-    重み（weights）を指定すると、各目的関数値がスケーリングされ、
-    重みが大きい特性ほど最適化で優先される。
-    - full モード: 各目的関数値に重みを乗算
-    - aggregated モード: 重み付き平均逸脱 + 重み付き最大逸脱 の2目的
+    重み（weights）は aggregated モードでのみ有効。
+    - aggregated モード: 重み付き平均逸脱 + 重み付き最大逸脱 の2目的に集約
+      重みが大きい特性ほど集約スコアへの寄与が増し、優先される。
+    - full モード: NSGA-III の内部正規化により重みはキャンセルされるため無視する。
     """
 
     def __init__(
@@ -153,12 +153,6 @@ class ObjectiveCalculator:
         self.directions = directions or {}
         self.weights = weights or {}
 
-        # 重み配列を構築（未指定は 1.0、最小値 1e-6 でクリップ）
-        self._weight_array = np.array([
-            max(float(self.weights.get(name, 1.0)), 1e-6)
-            for name in self.target_names
-        ])
-
         # maximize/minimize が含まれる場合は aggregated モードが意味をなさないため
         # 自動的に full モードに切り替える
         has_non_target = any(
@@ -169,6 +163,17 @@ class ObjectiveCalculator:
             self.aggregation_mode = "full"
         else:
             self.aggregation_mode = aggregation_mode
+
+        # 重み配列を構築（未指定は 1.0、最小値 1e-6 でクリップ）
+        # full モードでは NSGA-III の内部正規化により重みがキャンセルされるため
+        # 常に 1.0 とし、重み設定を無視する
+        if self.aggregation_mode == "full":
+            self._weight_array = np.ones(len(self.target_names))
+        else:
+            self._weight_array = np.array([
+                max(float(self.weights.get(name, 1.0)), 1e-6)
+                for name in self.target_names
+            ])
 
     def compute_objectives(self, X: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
         Y, _ = self.predictor.predict(X)
