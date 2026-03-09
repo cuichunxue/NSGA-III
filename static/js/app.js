@@ -94,6 +94,27 @@
         }
     }
 
+    // ----- 目標値行 HTML 生成ヘルパー ------------------------------------
+    function _makeTgtRowHtml(name, direction, val, weight) {
+        const targetSel = direction === "target" ? "selected" : "";
+        const maxSel    = direction === "maximize" ? "selected" : "";
+        const minSel    = direction === "minimize" ? "selected" : "";
+        const valDisabled = direction !== "target" ? 'disabled value=""' : `value="${escapeHtml(val)}"`;
+        return `
+            <td><input type="text" class="tgt-name" value="${escapeHtml(name)}" placeholder="特性名"></td>
+            <td>
+                <select class="tgt-direction">
+                    <option value="target" ${targetSel}>目標値に近づける</option>
+                    <option value="maximize" ${maxSel}>最大化</option>
+                    <option value="minimize" ${minSel}>最小化</option>
+                </select>
+            </td>
+            <td><input type="number" class="tgt-val" ${valDisabled} step="any"></td>
+            <td><input type="number" class="tgt-weight" value="${escapeHtml(String(weight))}" min="0.1" max="20" step="0.5" title="優先度の重み（デフォルト: 1）"></td>
+            <td><button class="btn-icon btn-remove-tgt" title="削除">&times;</button></td>
+        `;
+    }
+
     // ----- カスタムフォーム -----------------------------------------------
     function bindCustomForm() {
         // 変数行の追加
@@ -114,18 +135,7 @@
         // 目標行の追加
         $("#btn-add-target").addEventListener("click", () => {
             const row = document.createElement("tr");
-            row.innerHTML = `
-                <td><input type="text" class="tgt-name" placeholder="特性名"></td>
-                <td>
-                    <select class="tgt-direction">
-                        <option value="target">目標値に近づける</option>
-                        <option value="maximize">最大化</option>
-                        <option value="minimize">最小化</option>
-                    </select>
-                </td>
-                <td><input type="number" class="tgt-val" value="0" step="any"></td>
-                <td><button class="btn-icon btn-remove-tgt" title="削除">&times;</button></td>
-            `;
+            row.innerHTML = _makeTgtRowHtml("", "target", "0", "1");
             $("#target-table-body").appendChild(row);
             bindRemoveButtons();
             bindDirectionToggles();
@@ -286,18 +296,7 @@
         allTargetNames.forEach((tgtName) => {
             if (!existingTargetNames.has(tgtName)) {
                 const row = document.createElement("tr");
-                row.innerHTML = `
-                    <td><input type="text" class="tgt-name" value="${escapeHtml(tgtName)}" placeholder="特性名"></td>
-                    <td>
-                        <select class="tgt-direction">
-                            <option value="target">目標値に近づける</option>
-                            <option value="maximize">最大化</option>
-                            <option value="minimize">最小化</option>
-                        </select>
-                    </td>
-                    <td><input type="number" class="tgt-val" value="0" step="any"></td>
-                    <td><button class="btn-icon btn-remove-tgt" title="削除">&times;</button></td>
-                `;
+                row.innerHTML = _makeTgtRowHtml(tgtName, "target", "0", "1");
                 $("#target-table-body").appendChild(row);
             }
         });
@@ -402,6 +401,17 @@
             }
         }
 
+        // チェック8: 重みが正の数か
+        $$("#target-table-body tr").forEach((row) => {
+            const name = row.querySelector(".tgt-name").value.trim();
+            const wInput = row.querySelector(".tgt-weight");
+            if (!name || !wInput) return;
+            const w = parseFloat(wInput.value);
+            if (isNaN(w) || w <= 0) {
+                errors.push(`「${name}」の重みは 0 より大きい数値を入力してください。`);
+            }
+        });
+
         return errors;
     }
 
@@ -502,6 +512,7 @@
         const seed = $("#seed").value;
 
         let problemDesc = "";
+        let weightDesc = "";
         if (S.mode === "demo") {
             const info = S.demoProblems[S.selectedProblem];
             problemDesc = `<strong>問題:</strong> ${info.name} (${info.n_obj}目的, ${info.n_var}変数)`;
@@ -509,11 +520,29 @@
             const nVar = $$("#var-table-body tr").length;
             const nModel = S.uploadedModels.length;
             problemDesc = `<strong>問題:</strong> カスタム OLS (変数 ${nVar}個, モデル ${nModel}個)`;
+
+            // 重み情報を集計して表示
+            const weightParts = [];
+            let allOne = true;
+            $$("#target-table-body tr").forEach((row) => {
+                const name = row.querySelector(".tgt-name").value.trim();
+                const w = parseFloat(row.querySelector(".tgt-weight").value) || 1.0;
+                if (name) {
+                    weightParts.push(`${escapeHtml(name)}: <strong>${w}</strong>`);
+                    if (w !== 1.0) allOne = false;
+                }
+            });
+            if (allOne) {
+                weightDesc = `<strong>重み:</strong> 均等（全て 1.0）`;
+            } else {
+                weightDesc = `<strong>重み:</strong> ${weightParts.join(" &nbsp;|&nbsp; ")}`;
+            }
         }
 
         $("#run-summary").innerHTML = `
             ${problemDesc}<br>
             <strong>母集団:</strong> ${pop} &nbsp; <strong>世代:</strong> ${gen} &nbsp; <strong>シード:</strong> ${seed}
+            ${weightDesc ? `<br>${weightDesc}` : ""}
         `;
 
         // 進捗・エラー表示リセット
@@ -589,13 +618,16 @@
 
         const targets = {};
         const directions = {};
+        const weights = {};
         $$("#target-table-body tr").forEach((row) => {
             const name = row.querySelector(".tgt-name").value.trim();
             const val = parseFloat(row.querySelector(".tgt-val").value);
             const dir = row.querySelector(".tgt-direction").value;
+            const w = parseFloat(row.querySelector(".tgt-weight").value) || 1.0;
             if (name) {
                 targets[name] = dir === "target" ? val : 0;
                 directions[name] = dir;
+                weights[name] = w;
             }
         });
 
@@ -615,6 +647,7 @@
             model_paths: modelPaths,
             targets,
             directions,
+            weights,
             aggregation_mode: aggMode,
             deviation_mode: devMode,
             pop_size: pop,

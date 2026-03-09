@@ -130,6 +130,11 @@ class ObjectiveCalculator:
       - "target": 目標値からの逸脱量 |Y - target| を最小化（既定）
       - "maximize": 予測値 Y を最大化（内部的には -Y を最小化）
       - "minimize": 予測値 Y を最小化
+
+    重み（weights）を指定すると、各目的関数値がスケーリングされ、
+    重みが大きい特性ほど最適化で優先される。
+    - full モード: 各目的関数値に重みを乗算
+    - aggregated モード: 重み付き平均逸脱 + 重み付き最大逸脱 の2目的
     """
 
     def __init__(
@@ -139,12 +144,20 @@ class ObjectiveCalculator:
         aggregation_mode: str,
         deviation_mode: str = "absolute",
         directions: Optional[Dict[str, str]] = None,
+        weights: Optional[Dict[str, float]] = None,
     ):
         self.predictor = predictor
         self.targets = targets
         self.deviation_mode = deviation_mode
         self.target_names = predictor.target_names
         self.directions = directions or {}
+        self.weights = weights or {}
+
+        # 重み配列を構築（未指定は 1.0、最小値 1e-6 でクリップ）
+        self._weight_array = np.array([
+            max(float(self.weights.get(name, 1.0)), 1e-6)
+            for name in self.target_names
+        ])
 
         # maximize/minimize が含まれる場合は aggregated モードが意味をなさないため
         # 自動的に full モードに切り替える
@@ -163,23 +176,27 @@ class ObjectiveCalculator:
 
         for i, name in enumerate(self.target_names):
             direction = self.directions.get(name, "target")
+            w = float(self._weight_array[i])
 
             if direction == "maximize":
-                objectives[:, i] = -Y[:, i]
+                objectives[:, i] = w * (-Y[:, i])
             elif direction == "minimize":
-                objectives[:, i] = Y[:, i]
+                objectives[:, i] = w * Y[:, i]
             else:  # "target"
                 target = self.targets.get(name, 0.0)
                 abs_dev = np.abs(Y[:, i] - target)
                 if self.deviation_mode == "normalized" and abs(target) > 1e-12:
-                    objectives[:, i] = abs_dev / abs(target)
+                    objectives[:, i] = w * (abs_dev / abs(target))
                 else:
-                    objectives[:, i] = abs_dev
+                    objectives[:, i] = w * abs_dev
 
         if self.aggregation_mode == "full":
             return objectives, Y
         else:
-            mean_obj = np.mean(objectives, axis=1, keepdims=True)
+            # 重み付き平均: sum(w_i * dev_i) / sum(w_i)
+            # 重み付き最大: max(w_i * dev_i)  ← 重要特性の未達が強調される
+            w_sum = float(self._weight_array.sum())
+            mean_obj = np.sum(objectives, axis=1, keepdims=True) / w_sum
             max_obj = np.max(objectives, axis=1, keepdims=True)
             return np.hstack([mean_obj, max_obj]), Y
 

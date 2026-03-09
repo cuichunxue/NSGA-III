@@ -268,6 +268,7 @@ class OptimizationRunner:
         agg_mode = self.config.get("aggregation_mode", "aggregated")
         dev_mode = self.config.get("deviation_mode", "absolute")
         directions = self.config.get("directions", {})
+        weights = self.config.get("weights", {})
 
         variable_names = list(variables.keys())
         xl = np.array([v[0] for v in variables.values()])
@@ -279,7 +280,7 @@ class OptimizationRunner:
             raise RuntimeError("有効なモデルがロードされませんでした。ファイルパスを確認してください。")
 
         obj_calculator = ObjectiveCalculator(
-            predictor, targets, agg_mode, dev_mode, directions,
+            predictor, targets, agg_mode, dev_mode, directions, weights,
         )
         problem = MultiObjectiveProblem(obj_calculator, xl, xu)
         n_obj = obj_calculator.get_n_objectives()

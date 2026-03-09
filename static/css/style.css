@@ -239,6 +239,36 @@ input:focus { outline: none; border-color: var(--blue-500); box-shadow: 0 0 0 3p
     color: var(--gray-500);
 }
 
+/* --- 重み入力 ------------------------------------------------------- */
+.tgt-weight {
+    width: 72px !important;
+    text-align: center;
+    font-weight: 600;
+    color: var(--blue-700);
+    border-color: var(--blue-100) !important;
+    background: var(--blue-50) !important;
+}
+.tgt-weight:focus {
+    border-color: var(--blue-500) !important;
+    background: var(--white) !important;
+}
+
+/* 重み列ヘッダーのヒントアイコン */
+.hint-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 15px;
+    height: 15px;
+    border-radius: 50%;
+    background: var(--blue-400);
+    color: var(--white);
+    font-size: .65rem;
+    font-weight: 700;
+    cursor: help;
+    vertical-align: middle;
+}
+
 /* --- アップロード -------------------------------------------------- */
 .upload-area {
     border: 2px dashed var(--gray-300);

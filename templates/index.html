@@ -120,6 +120,7 @@
                                 <th>特性名</th>
                                 <th>方向</th>
                                 <th>目標値</th>
+                                <th title="重みが大きいほど最適化で優先されます（例: 3 = 3倍重視）">重み <span class="hint-icon">?</span></th>
                                 <th></th>
                             </tr>
                         </thead>
@@ -134,6 +135,7 @@
                                     </select>
                                 </td>
                                 <td><input type="number" class="tgt-val" value="0" step="any"></td>
+                                <td><input type="number" class="tgt-weight" value="1" min="0.1" max="20" step="0.5" title="優先度の重み（デフォルト: 1）"></td>
                                 <td><button class="btn-icon btn-remove-tgt" title="削除">&times;</button></td>
                             </tr>
                         </tbody>
