@@ -132,8 +132,10 @@ class ObjectiveCalculator:
       - "minimize": 予測値 Y を最小化
 
     重み（weights）は aggregated モードでのみ有効。
-    - aggregated モード: 重み付き平均逸脱 + 重み付き最大逸脱 の2目的に集約
-      重みが大きい特性ほど集約スコアへの寄与が増し、優先される。
+    - aggregated モード: 重み付き平均逸脱 + 正規化最大逸脱 の2目的に集約
+      Obj1（重み付き平均）: 重みが大きい特性ほど集約スコアへの寄与が増す（優先方向）。
+      Obj2（正規化最大）: 重みなし＝全特性のバランスを保証（品質方向）。
+      偏差は自動的にスケール正規化され、異なるスケールの特性でも公平に比較可能。
     - full モード: NSGA-III の内部正規化により重みはキャンセルされるため無視する。
     """
 
@@ -175,35 +177,55 @@ class ObjectiveCalculator:
                 for name in self.target_names
             ])
 
+        # スケール正規化係数を事前計算（aggregated モードで常に使用）
+        # 各特性の偏差を同一スケールに揃えるため、目標値の絶対値でスケーリング
+        # これにより異なるスケールの特性でも公平に比較でき、
+        # 重みが純粋に優先度を表すようになる
+        self._scale_factors = np.ones(len(self.target_names))
+        if self.aggregation_mode != "full":
+            for i, name in enumerate(self.target_names):
+                direction = self.directions.get(name, "target")
+                if direction == "target":
+                    target = self.targets.get(name, 0.0)
+                    # max(|target|, 1.0) で 0 付近の target でもゼロ除算を回避
+                    self._scale_factors[i] = max(abs(target), 1.0)
+
     def compute_objectives(self, X: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
         Y, _ = self.predictor.predict(X)
-        objectives = np.zeros_like(Y)
+        n_samples = X.shape[0]
+        n_targets = len(self.target_names)
 
+        # --- 正規化偏差を一括計算（ベクトル化） ---
+        norm_dev = np.zeros((n_samples, n_targets))
         for i, name in enumerate(self.target_names):
             direction = self.directions.get(name, "target")
-            w = float(self._weight_array[i])
-
             if direction == "maximize":
-                objectives[:, i] = w * (-Y[:, i])
+                norm_dev[:, i] = -Y[:, i]
             elif direction == "minimize":
-                objectives[:, i] = w * Y[:, i]
+                norm_dev[:, i] = Y[:, i]
             else:  # "target"
                 target = self.targets.get(name, 0.0)
                 abs_dev = np.abs(Y[:, i] - target)
                 if self.deviation_mode == "normalized" and abs(target) > 1e-12:
-                    objectives[:, i] = w * (abs_dev / abs(target))
+                    norm_dev[:, i] = abs_dev / abs(target)
                 else:
-                    objectives[:, i] = w * abs_dev
+                    norm_dev[:, i] = abs_dev
 
         if self.aggregation_mode == "full":
-            return objectives, Y
-        else:
-            # 重み付き平均: sum(w_i * dev_i) / sum(w_i)
-            # 重み付き最大: max(w_i * dev_i)  ← 重要特性の未達が強調される
-            w_sum = float(self._weight_array.sum())
-            mean_obj = np.sum(objectives, axis=1, keepdims=True) / w_sum
-            max_obj = np.max(objectives, axis=1, keepdims=True)
-            return np.hstack([mean_obj, max_obj]), Y
+            return norm_dev, Y
+
+        # --- Aggregated モード ---
+        # スケール正規化: 偏差をスケールで割って同一尺度にする（常に適用）
+        scaled_dev = norm_dev / self._scale_factors[np.newaxis, :]
+        w = self._weight_array
+        w_sum = float(w.sum())
+        # Obj1: 重み付き平均（優先度反映の全体品質）
+        obj1 = (scaled_dev * w[np.newaxis, :]).sum(axis=1, keepdims=True) / w_sum
+        # Obj2: 重みなし最大（全特性バランスの品質保証）
+        # Obj1が優先方向、Obj2がバランス方向を担い、両目的の独立性を確保する
+        obj2 = np.max(scaled_dev, axis=1, keepdims=True)
+
+        return np.hstack([obj1, obj2]), Y
 
     def get_n_objectives(self) -> int:
         if self.aggregation_mode == "full":
